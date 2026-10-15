@@ -271,8 +271,8 @@ export const s = StyleSheet.create({
     marginBottom: 0
   },
   scrollLogoImg: {
-    width: 140,
-    height: 42
+    width: 180,
+    height: 54
   },
   headContent: {
     justifyContent: 'center'

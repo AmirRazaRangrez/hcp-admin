@@ -146,14 +146,14 @@ export default function Home() {
 const styles = StyleSheet.create({
   heroRevenue: {
     backgroundColor: '#0F2A2E',
-    borderRadius: 14,
-    paddingVertical: 9,
-    paddingHorizontal: 14,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     shadowColor: '#0F2A2E',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.16,
-    shadowRadius: 6,
-    elevation: 3
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    elevation: 4
   },
   heroTop: {
     flexDirection: 'row',
@@ -162,29 +162,29 @@ const styles = StyleSheet.create({
   },
   heroLabel: {
     color: '#8EAAA4',
-    fontSize: 11.5,
+    fontSize: 12,
     fontWeight: '800',
-    letterSpacing: 0.5
+    letterSpacing: 0.6
   },
   heroAmount: {
     color: '#FFFFFF',
-    fontSize: 26,
+    fontSize: 29,
     fontWeight: '900',
-    letterSpacing: -0.4,
-    marginVertical: 2
+    letterSpacing: -0.5,
+    marginVertical: 3
   },
   heroSub: {
     color: '#95ABA6',
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '500',
     marginTop: 1
   },
   metricsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
-    marginTop: 2,
-    paddingBottom: 2
+    gap: 8,
+    marginTop: 4,
+    paddingBottom: 4
   },
   tileWrap: {
     flexBasis: '48%',
@@ -192,18 +192,18 @@ const styles = StyleSheet.create({
   },
   tileCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    paddingVertical: 5,
-    paddingHorizontal: 9,
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 11,
     borderWidth: 1,
     borderColor: '#E8EDEA',
-    minHeight: 52,
+    minHeight: 63,
     justifyContent: 'space-between',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.02,
-    shadowRadius: 2,
-    elevation: 1
+    shadowOpacity: 0.03,
+    shadowRadius: 3,
+    elevation: 1.5
   },
   tileHighlight: {
     borderColor: '#C79A4B',
@@ -216,16 +216,16 @@ const styles = StyleSheet.create({
   },
   tileLabel: {
     color: '#374151',
-    fontSize: 11,
-    lineHeight: 14,
+    fontSize: 11.5,
+    lineHeight: 15,
     fontWeight: '700',
     flex: 1,
     marginRight: 4
   },
   tileIconBox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
+    width: 25,
+    height: 25,
+    borderRadius: 7,
     backgroundColor: '#F3F6F4',
     alignItems: 'center',
     justifyContent: 'center'
@@ -234,11 +234,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
-    marginTop: 2
+    marginTop: 3
   },
   tileValue: {
     color: c.ink,
-    fontSize: 16.5,
+    fontSize: 18,
     fontWeight: '800'
   },
   tileValueHighlight: {

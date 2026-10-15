@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, Linking, Platform, Alert } from 'rea
 import { useLocalSearchParams } from 'expo-router';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system';
 import { api } from '../src/api/client';
 import { Screen, Card, Badge, useLoad } from '../src/lib/ui';
 import { c, money, when } from '../src/lib/theme';
@@ -386,10 +387,21 @@ export default function RoomDetails() {
         return;
       }
       const file = await Print.printToFileAsync({ html });
+      let shareUri = file.uri;
+      try {
+        const dest = `${FileSystem.cacheDirectory}Checkin_Form_Room_${s.room || s.id}.pdf`;
+        await FileSystem.copyAsync({ from: file.uri, to: dest });
+        const contentUri = await FileSystem.getContentUriAsync(dest);
+        shareUri = contentUri || dest;
+      } catch (copyErr) {
+        console.warn('[PDF share] fallback to direct uri:', copyErr);
+      }
+
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(file.uri, {
+        await Sharing.shareAsync(shareUri, {
           mimeType: 'application/pdf',
-          dialogTitle: `Check-in Form - Room ${s.room}`
+          dialogTitle: `Check-in Form - Room ${s.room}`,
+          UTI: 'com.adobe.pdf'
         });
       }
     } catch (err: any) {
@@ -409,10 +421,21 @@ export default function RoomDetails() {
         return;
       }
       const file = await Print.printToFileAsync({ html });
+      let shareUri = file.uri;
+      try {
+        const dest = `${FileSystem.cacheDirectory}Tax_Invoice_Room_${s.room || s.id}.pdf`;
+        await FileSystem.copyAsync({ from: file.uri, to: dest });
+        const contentUri = await FileSystem.getContentUriAsync(dest);
+        shareUri = contentUri || dest;
+      } catch (copyErr) {
+        console.warn('[PDF share] fallback to direct uri:', copyErr);
+      }
+
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(file.uri, {
+        await Sharing.shareAsync(shareUri, {
           mimeType: 'application/pdf',
-          dialogTitle: `Tax Invoice - Room ${s.room}`
+          dialogTitle: `Tax Invoice - Room ${s.room}`,
+          UTI: 'com.adobe.pdf'
         });
       }
     } catch (err: any) {

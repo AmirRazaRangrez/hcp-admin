@@ -59,6 +59,19 @@ export default function StoreScreen() {
   const [partyPayRef, setPartyPayRef] = useState<string>('');
   const [partyPaidBy, setPartyPaidBy] = useState<string>('Admin (Jaijeet sir)');
   const [partyPaying, setPartyPaying] = useState<boolean>(false);
+  
+  // Custom Themed Notice Modal State (replaces default OS Alert.alert)
+  const [noticeModal, setNoticeModal] = useState<{ title: string; message: string; type?: 'success' | 'error' | 'info' } | null>(null);
+
+  // Helper to safely format bill numbers without ever displaying '#N/A'
+  const formatBillNo = (b: any) => {
+    if (!b) return 'Bill';
+    const raw = String(b.bill_number || '').trim();
+    if (!raw || raw.toUpperCase() === 'N/A' || raw.toUpperCase() === '#N/A' || raw.toUpperCase() === 'NULL' || raw.toUpperCase() === 'UNDEFINED') {
+      return `Bill #${b.id || ''}`;
+    }
+    return raw.startsWith('#') ? raw : `#${raw}`;
+  };
 
   // Load store bills for current and history
   const { data: currentData, err: currentErr, busy: currentBusy, at: currentAt, reload: reloadCurrent } = useLoad(
@@ -157,7 +170,11 @@ export default function StoreScreen() {
     if (!selectedBill) return;
     const amount = parseFloat(payAmount);
     if (isNaN(amount) || amount <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid payment amount greater than 0.');
+      setNoticeModal({
+        title: 'Invalid Amount',
+        message: 'Please enter a valid payment amount greater than 0.',
+        type: 'error'
+      });
       return;
     }
 
@@ -172,17 +189,22 @@ export default function StoreScreen() {
       });
 
       const isFull = amount >= Number(selectedBill.pending_amount);
-      Alert.alert(
-        'Payment Recorded',
-        isFull
-          ? `Bill #${selectedBill.bill_number || selectedBill.id} marked as FULL and moved to History.`
-          : `Partial payment of ${money(amount)} recorded. Status marked as PARTLY.`
-      );
+      setNoticeModal({
+        title: 'Payment Recorded',
+        message: isFull
+          ? `${formatBillNo(selectedBill)} marked as FULL and moved to History.`
+          : `Partial payment of ${money(amount)} recorded. Status marked as PARTLY.`,
+        type: 'success'
+      });
 
       setSelectedBill(null);
       reloadAll();
     } catch (e: any) {
-      Alert.alert('Payment Failed', e?.message || 'Could not record payment. Please try again.');
+      setNoticeModal({
+        title: 'Payment Failed',
+        message: e?.message || 'Could not record payment. Please try again.',
+        type: 'error'
+      });
     } finally {
       setPaying(false);
     }
@@ -193,7 +215,11 @@ export default function StoreScreen() {
     if (!selectedParty) return;
     const amount = parseFloat(partyPayAmount);
     if (isNaN(amount) || amount <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid payment amount greater than 0.');
+      setNoticeModal({
+        title: 'Invalid Amount',
+        message: 'Please enter a valid payment amount greater than 0.',
+        type: 'error'
+      });
       return;
     }
 
@@ -207,15 +233,20 @@ export default function StoreScreen() {
         paid_by: partyPaidBy
       });
 
-      Alert.alert(
-        'Party Payment Recorded',
-        `Payment of ${money(amount)} applied towards ${selectedParty.vendor_name}. Oldest bills allocated first.`
-      );
+      setNoticeModal({
+        title: 'Party Payment Recorded',
+        message: `Payment of ${money(amount)} applied towards ${selectedParty.vendor_name}. Oldest bills allocated first.`,
+        type: 'success'
+      });
 
       setSelectedParty(null);
       reloadAll();
     } catch (e: any) {
-      Alert.alert('Party Payment Failed', e?.message || 'Could not record payment.');
+      setNoticeModal({
+        title: 'Party Payment Failed',
+        message: e?.message || 'Could not record payment.',
+        type: 'error'
+      });
     } finally {
       setPartyPaying(false);
     }
@@ -307,16 +338,16 @@ export default function StoreScreen() {
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
                   <Text style={st.kpiMini}>
-                    <Text style={{ fontWeight: '700', color: c.ink }}>{liveBills.length}</Text> Pending Bills
+                    party: <Text style={{ fontWeight: '700', color: c.ink }}>{partySummaries.length}</Text>
                   </Text>
                   <Text style={st.kpiMini}>
-                    <Text style={{ fontWeight: '700', color: c.ink }}>{partySummaries.length}</Text> Parties
+                    Bill: <Text style={{ fontWeight: '700', color: c.ink }}>{liveBills.length}</Text>
                   </Text>
                 </View>
               </View>
             </Card>
 
-            {/* TOGGLE VIEW: Party-wise Entire Due vs Bill-wise Due */}
+            {/* TOGGLE VIEW: Party-wise vs Bill-wise Due */}
             <View style={st.viewToggleRow}>
               <Pressable
                 onPress={() => setCurrentView('party')}
@@ -325,7 +356,7 @@ export default function StoreScreen() {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <UsersIcon size={14} color={currentView === 'party' ? '#fff' : c.ink} />
                   <Text style={[st.viewToggleLabel, currentView === 'party' && st.viewToggleLabelActive]}>
-                    Party-wise Entire Due
+                    Party-wise
                   </Text>
                 </View>
               </Pressable>
@@ -431,7 +462,7 @@ export default function StoreScreen() {
                               <View style={{ flex: 1 }}>
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                                   <Text style={{ fontWeight: '700', color: c.ink, fontSize: 14 }}>
-                                    {b.bill_number ? `#${b.bill_number}` : `Bill #${b.id}`}
+                                    {formatBillNo(b)}
                                   </Text>
                                   <Badge
                                     text={b.status === 'PARTLY' ? 'PARTLY' : 'PENDING'}
@@ -479,7 +510,7 @@ export default function StoreScreen() {
                         <View style={{ flex: 1, marginRight: 8 }}>
                           <Text style={st.billVendor}>{b.vendor_name || 'Store Vendor'}</Text>
                           <Text style={st.billSub}>
-                            {b.bill_number ? `Bill #${b.bill_number}` : `ID: #${b.id}`} · {b.bill_date || when(b.created_at)}
+                            {formatBillNo(b)} · {b.bill_date || when(b.created_at)}
                           </Text>
                         </View>
 
@@ -557,7 +588,7 @@ export default function StoreScreen() {
                     <View style={{ flex: 1, marginRight: 8 }}>
                       <Text style={st.billVendor}>{b.vendor_name || 'Store Vendor'}</Text>
                       <Text style={st.billSub}>
-                        {b.bill_number ? `Bill #${b.bill_number}` : `ID: #${b.id}`} · {b.bill_date || when(b.created_at)}
+                        {formatBillNo(b)} · {b.bill_date || when(b.created_at)}
                       </Text>
                     </View>
 
@@ -600,7 +631,7 @@ export default function StoreScreen() {
             <View style={st.modalHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={st.modalTitle}>
-                  {selectedBill?.bill_number ? `Bill #${selectedBill.bill_number}` : `Bill Details (#${selectedBill?.id})`}
+                  {formatBillNo(selectedBill)}
                 </Text>
                 <Text style={st.modalSubtitle}>{selectedBill?.vendor_name}</Text>
               </View>
@@ -992,6 +1023,42 @@ export default function StoreScreen() {
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ========================================================= */}
+      {/* 🔔 CUSTOM BRANDED NOTICE MODAL (Replaces default OS Alert) */}
+      {/* ========================================================= */}
+      <Modal
+        visible={!!noticeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setNoticeModal(null)}
+      >
+        <View style={st.noticeOverlay}>
+          <View style={st.noticeContainer}>
+            <View style={[
+              st.noticeIconCircle,
+              noticeModal?.type === 'error' ? st.noticeIconCircleError : st.noticeIconCircleSuccess
+            ]}>
+              {noticeModal?.type === 'error' ? (
+                <AlertIcon size={28} color="#D9381E" />
+              ) : (
+                <CheckIcon size={28} color="#0E7A4A" />
+              )}
+            </View>
+            <Text style={st.noticeTitle}>{noticeModal?.title}</Text>
+            <Text style={st.noticeMessage}>{noticeModal?.message}</Text>
+            <Pressable
+              onPress={() => setNoticeModal(null)}
+              style={[
+                st.noticeBtn,
+                noticeModal?.type === 'error' ? st.noticeBtnError : st.noticeBtnSuccess
+              ]}
+            >
+              <Text style={st.noticeBtnText}>Okay, Got it</Text>
+            </Pressable>
+          </View>
+        </View>
       </Modal>
     </>
   );
@@ -1510,5 +1577,71 @@ const st = StyleSheet.create({
     color: c.text,
     fontSize: 12,
     textAlign: 'center'
+  },
+
+  // Custom Branded Notice Modal Styles
+  noticeOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24
+  },
+  noticeContainer: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 8
+  },
+  noticeIconCircle: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16
+  },
+  noticeIconCircleSuccess: {
+    backgroundColor: '#E6F4EA'
+  },
+  noticeIconCircleError: {
+    backgroundColor: '#FCE8E6'
+  },
+  noticeTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: c.ink,
+    textAlign: 'center',
+    marginBottom: 8
+  },
+  noticeMessage: {
+    fontSize: 14,
+    color: c.text,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 20
+  },
+  noticeBtn: {
+    width: '100%',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center'
+  },
+  noticeBtnSuccess: {
+    backgroundColor: c.ink
+  },
+  noticeBtnError: {
+    backgroundColor: '#D9381E'
+  },
+  noticeBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700'
   }
 });

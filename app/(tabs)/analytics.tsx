@@ -717,7 +717,21 @@ export default function AnalyticsTab() {
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.modalBody}>
               {/* 1. Filter Shortcuts: Today, Yesterday, 5 Previous Days in ONE ROW */}
               <View style={styles.filterSection}>
-                <Text style={styles.sectionLabel}>QUICK SHORTCUTS (1 ROW)</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <Text style={styles.sectionLabel}>QUICK SHORTCUTS (1 ROW)</Text>
+                  {tempShortcut !== 'Today' && (
+                    <Pressable
+                      onPress={() => {
+                        setTempShortcut('Today');
+                        setTempFrom(T);
+                        setTempTo(T);
+                      }}
+                      hitSlop={6}
+                    >
+                      <Text style={styles.clearSectionText}>Reset</Text>
+                    </Pressable>
+                  )}
+                </View>
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
@@ -746,7 +760,21 @@ export default function AnalyticsTab() {
 
               {/* 2. Below that: From Date to Date */}
               <View style={styles.filterSection}>
-                <Text style={styles.sectionLabel}>FROM DATE  TO  DATE</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <Text style={styles.sectionLabel}>FROM DATE  TO  DATE</Text>
+                  {(tempFrom !== T || tempTo !== T) && (
+                    <Pressable
+                      onPress={() => {
+                        setTempFrom(T);
+                        setTempTo(T);
+                        setTempShortcut('Today');
+                      }}
+                      hitSlop={6}
+                    >
+                      <Text style={styles.clearSectionText}>Reset Dates</Text>
+                    </Pressable>
+                  )}
+                </View>
                 <View style={styles.dateInputsRow}>
                   <View style={styles.dateInputWrap}>
                     <Text style={styles.inputMiniLabel}>From Date</Text>
@@ -780,7 +808,20 @@ export default function AnalyticsTab() {
 
               {/* 3. Below that: From "Bill/Tax No" to "Bill/Tax No" */}
               <View style={styles.filterSection}>
-                <Text style={styles.sectionLabel}>BILL / TAX INVOICE NO. RANGE</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <Text style={styles.sectionLabel}>BILL / TAX INVOICE NO. RANGE</Text>
+                  {(tempFromBill || tempToBill) ? (
+                    <Pressable
+                      onPress={() => {
+                        setTempFromBill('');
+                        setTempToBill('');
+                      }}
+                      hitSlop={6}
+                    >
+                      <Text style={styles.clearSectionText}>Clear Bills</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
                 <View style={styles.dateInputsRow}>
                   <View style={styles.dateInputWrap}>
                     <Text style={styles.inputMiniLabel}>From Bill/Tax #</Text>
@@ -791,6 +832,11 @@ export default function AnalyticsTab() {
                       placeholderTextColor={c.mute}
                       style={styles.dateInput}
                     />
+                    {tempFromBill.length > 0 && (
+                      <Pressable onPress={() => setTempFromBill('')} style={styles.inputClearBtn} hitSlop={6}>
+                        <CloseIcon size={12} color={c.mute} />
+                      </Pressable>
+                    )}
                   </View>
 
                   <View style={styles.dateInputWrap}>
@@ -802,31 +848,12 @@ export default function AnalyticsTab() {
                       placeholderTextColor={c.mute}
                       style={styles.dateInput}
                     />
+                    {tempToBill.length > 0 && (
+                      <Pressable onPress={() => setTempToBill('')} style={styles.inputClearBtn} hitSlop={6}>
+                        <CloseIcon size={12} color={c.mute} />
+                      </Pressable>
+                    )}
                   </View>
-                </View>
-              </View>
-
-              {/* 4. Below that: "New First", "Old First" */}
-              <View style={styles.filterSection}>
-                <Text style={styles.sectionLabel}>SORT ORDER</Text>
-                <View style={styles.sortToggleRow}>
-                  <Pressable
-                    onPress={() => setTempSort('new')}
-                    style={[styles.sortBtn, tempSort === 'new' && styles.sortBtnActive]}
-                  >
-                    <Text style={[styles.sortBtnText, tempSort === 'new' && styles.sortBtnTextActive]}>
-                      New First
-                    </Text>
-                  </Pressable>
-
-                  <Pressable
-                    onPress={() => setTempSort('old')}
-                    style={[styles.sortBtn, tempSort === 'old' && styles.sortBtnActive]}
-                  >
-                    <Text style={[styles.sortBtnText, tempSort === 'old' && styles.sortBtnTextActive]}>
-                      Old First
-                    </Text>
-                  </Pressable>
                 </View>
               </View>
             </ScrollView>
@@ -1142,6 +1169,17 @@ const styles = StyleSheet.create({
     right: 8,
     top: 14,
     padding: 4
+  },
+  inputClearBtn: {
+    position: 'absolute',
+    right: 8,
+    top: 14,
+    padding: 4
+  },
+  clearSectionText: {
+    color: '#E11D48',
+    fontSize: 12,
+    fontWeight: '700'
   },
 
   // Sort Order Toggle

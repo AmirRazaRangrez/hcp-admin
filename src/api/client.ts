@@ -207,6 +207,69 @@ async function fetchSupabaseOccupied() {
   return [];
 }
 
+async function fetchSupabaseDailyAnalytics(startDate: string, endDate: string) {
+  try {
+    const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+    const url = startDate === endDate
+      ? `${SUPABASE_URL}/rest/v1/hotel_analytics?id=eq.${startDate}&select=*`
+      : `${SUPABASE_URL}/rest/v1/hotel_analytics?id=gte.${startDate}&id=lte.${endDate}&select=*`;
+    const rows = await fetch(url, { headers: h }).then(r => r.json()).catch(() => []);
+    if (Array.isArray(rows) && rows.length > 0) {
+      let rev = 0, cash = 0, upi = 0, card = 0, chkIn = 0, chkOut = 0;
+      rows.forEach((r: any) => {
+        rev += Number(r.today_revenue) || 0;
+        cash += Number(r.today_cash) || 0;
+        upi += Number(r.today_upi) || 0;
+        card += Number(r.today_card) || 0;
+        chkIn += Number(r.today_checkins) || 0;
+        chkOut += Number(r.today_checkouts) || 0;
+      });
+      const gst = Math.round(rev * 5 / 105 * 100) / 100;
+      const base = rev - gst;
+      return {
+        success: true,
+        stats: {
+          grossRevenue: rev,
+          totalRealized: rev,
+          totalExpenses: 0,
+          netProfit: rev,
+          cashInDrawer: cash,
+          totalCashInflow: cash,
+          totalCardInflow: card,
+          totalUpiInflow: upi,
+          gstCollections: gst,
+          totalGstCollections: gst,
+          netToHotel: base,
+          baseRevenue: base,
+          roomRevenue: rev,
+          restaurantRevenue: 0,
+          barRevenue: 0,
+          advancesCollected: 0
+        },
+        analytics: {
+          breakdown: {
+            hospitality: {
+              total: rev,
+              base,
+              gst,
+              cash,
+              card,
+              upi,
+              cheque: 0,
+              cheque_realized: 0
+            },
+            restaurant: { total: 0, cash: 0, upi: 0, card: 0, tax: 0, subtotal: 0, count: 0 },
+            bar: { total: 0, cash: 0, upi: 0, card: 0, tax: 0, subtotal: 0, count: 0 }
+          }
+        }
+      };
+    }
+  } catch (e) {
+    console.warn('[Analytics Cloud Fallback Error]', e);
+  }
+  return null;
+}
+
 async function fetchSupabaseApprovals() {
   const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
   const r = await fetch(
@@ -529,7 +592,7 @@ const realApi={
      revenue: { total: 0, hospitality: 0, restaurant: 0, bar: 0 }
    };
  },
- analytics:(startDate:string,endDate:string)=>sget(ROUTES.analytics,{startDate,endDate}).then(r=>r.data).catch(()=>null),
+ analytics: async (startDate: string, endDate: string) => { try { const res = await sget(ROUTES.analytics, { startDate, endDate }); if (res?.data) return res.data; } catch {} return fetchSupabaseDailyAnalytics(startDate, endDate); },
  async bills(p:any={}){
    try {
      const g=(u:string,d:string)=>sget(u,p).then(r=>arr(r.data).map((b:any)=>({...b,dept:d})));
