@@ -111,6 +111,22 @@ async function recordSupabaseStorePayment(body: any) {
     targetBill.paid_amount = newPaid;
     targetBill.pending_amount = newPending;
     targetBill.status = newStatus;
+
+    // Dispatch push notification to Storeman APK (topic: store_bills)
+    try {
+      fetch(`${SUPABASE_URL}/functions/v1/send-store-push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON_KEY },
+        body: JSON.stringify({
+          title: newStatus === 'FULL' ? '✅ Bill Paid in Full' : '⚠️ Bill Paid Partly',
+          body: `₹${amount.toLocaleString('en-IN')} paid by Admin for ${targetBill.vendor_name || 'Vendor'}. Status: ${newStatus}`,
+          type: 'store_payment',
+          topic: 'store_bills',
+          data: { bill_id: targetBill.id, status: newStatus, amount }
+        })
+      }).catch(() => {});
+    } catch (_) {}
+
     return { success: true, updatedBill: targetBill };
   } else if (body.vendor_id) {
     const bRes = await fetch(`${SUPABASE_URL}/rest/v1/store_bills?vendor_id=eq.${body.vendor_id}&pending_amount=gt.0&status=in.(PENDING,PARTLY)&order=created_at.asc`, { headers: h }).then(r => r.json());
@@ -146,6 +162,22 @@ async function recordSupabaseStorePayment(body: any) {
         paid_by: body.paid_by || 'Admin (Jaijeet sir)'
       })
     });
+
+    // Dispatch push notification to Storeman APK for party payment
+    try {
+      fetch(`${SUPABASE_URL}/functions/v1/send-store-push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON_KEY },
+        body: JSON.stringify({
+          title: '💰 Party Payment Recorded',
+          body: `₹${amount.toLocaleString('en-IN')} payment recorded by Admin.`,
+          type: 'store_payment',
+          topic: 'store_bills',
+          data: { vendor_id: body.vendor_id, amount }
+        })
+      }).catch(() => {});
+    } catch (_) {}
+
     return { success: true };
   }
   throw new Error('Either bill_id or vendor_id is required');
@@ -650,15 +682,35 @@ const realApi={
  async roomOrders(stay:any){
    try {
      const rs=await Promise.allSettled([sget(ROUTES.restaurantBills,{period:'week'}),sget(ROUTES.barBills,{period:'week'}),sget('/restaurant/orders'),sget('/bar/orders')]);const dept=['Restaurant','Bar','Restaurant','Bar'];const seen=new Set<string>(),out:any[]=[];
-     rs.forEach((r,i)=>{if(r.status!=='fulfilled')return;arr(r.value.data).forEach((b:any)=>{const rm=String(b.room_number??b.room_id??''),bk=String(b.booking_id??b.stay_id??'');const same=(rm!==''&&rm===String(stay.room))||(bk!==''&&bk===String(stay.id));if(!same)return;
-      if(stay.checkIn&&ts(b.created_at)&&ts(b.created_at)<ts(stay.checkIn)-6e4)return;const k=dept[i]+':'+b.id;if(seen.has(k))return;seen.add(k);out.push({...b,dept:dept[i],room_number:b.room_number||stay.room})})});
+     const stayCheckinMs = stay?.checkIn ? ts(stay.checkIn) : 0;
+     rs.forEach((r,i)=>{if(r.status!=='fulfilled')return;arr(r.value.data).forEach((b:any)=>{
+       if (String(b.department || '').toLowerCase().includes('discount') || String(b.type || '').toLowerCase().includes('discount')) return;
+       const rm=String(b.room_number??b.room_id??''),bk=String(b.booking_id??b.stay_id??'');
+       const same=(rm!==''&&rm===String(stay.room))||(bk!==''&&bk===String(stay.id));
+       if(!same)return;
+       if(stayCheckinMs > 0 && ts(b.created_at) && ts(b.created_at) < stayCheckinMs - 6e4) return;
+       const k=dept[i]+':'+b.id;
+       if(seen.has(k))return;
+       seen.add(k);
+       out.push({...b,dept:dept[i],room_number:b.room_number||stay.room});
+     })});
      if (out.length > 0) return out.sort((x,y)=>ts(y.created_at)-ts(x.created_at));
    } catch {}
    try {
      const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
      const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?room_number=eq.${encodeURIComponent(stay.room)}&select=*`, { headers: h }).then(x => x.json()).catch(() => []);
      if (Array.isArray(r) && r.length > 0) {
-       return r.map((c: any) => ({
+       const stayCheckinMs = stay?.checkIn ? ts(stay.checkIn) : 0;
+       const validCharges = r.filter((c: any) => {
+         const dept = String(c.department || '').toLowerCase();
+         if (dept.includes('discount') || dept === 'discount_approval') return false;
+         if (stayCheckinMs > 0 && c.created_at) {
+           const chargeMs = new Date(c.created_at).getTime();
+           if (chargeMs < stayCheckinMs - 6e4) return false;
+         }
+         return true;
+       });
+       return validCharges.map((c: any) => ({
          id: c.id,
          dept: (c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1),
          order_number: c.bill_no || `RES-${c.id}`,

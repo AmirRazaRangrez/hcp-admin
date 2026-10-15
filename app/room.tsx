@@ -391,8 +391,7 @@ export default function RoomDetails() {
       try {
         const dest = `${FileSystem.cacheDirectory}Checkin_Form_Room_${s.room || s.id}.pdf`;
         await FileSystem.copyAsync({ from: file.uri, to: dest });
-        const contentUri = await FileSystem.getContentUriAsync(dest);
-        shareUri = contentUri || dest;
+        shareUri = dest;
       } catch (copyErr) {
         console.warn('[PDF share] fallback to direct uri:', copyErr);
       }
@@ -425,8 +424,7 @@ export default function RoomDetails() {
       try {
         const dest = `${FileSystem.cacheDirectory}Tax_Invoice_Room_${s.room || s.id}.pdf`;
         await FileSystem.copyAsync({ from: file.uri, to: dest });
-        const contentUri = await FileSystem.getContentUriAsync(dest);
-        shareUri = contentUri || dest;
+        shareUri = dest;
       } catch (copyErr) {
         console.warn('[PDF share] fallback to direct uri:', copyErr);
       }

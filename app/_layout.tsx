@@ -22,18 +22,23 @@ if(Platform.OS!=='web'){
 function handleNotificationNavigation(router: any, response: any) {
   try {
     const data = response?.notification?.request?.content?.data || {};
+    const title = response?.notification?.request?.content?.title || '';
+    const body = response?.notification?.request?.content?.body || '';
     const notifType = String(data.type || (data as any)?.notifType || '').toLowerCase();
     console.log('[Push DeepLink] Routing for notification type:', notifType, data);
 
     if (notifType.includes('discount') || notifType.includes('approval')) {
       // 1. Discount Permission: open Discounts tab (Pending review)
       router.push('/(tabs)/approvals');
-    } else if (notifType.includes('checkin') || notifType.includes('stay')) {
-      // 2. Check-In: open the checked-in room
+    } else if (notifType.includes('checkin') || notifType.includes('stay') || title.toLowerCase().includes('check-in')) {
+      // 2. Check-In: open the checked-in room directly
+      const titleMatch = (title + ' ' + body).match(/Room\s*([0-9A-Za-z]+)/i);
+      const titleRoom = titleMatch ? titleMatch[1].trim() : '';
       const room = String(
         data.room_number ||
         data.room ||
         (Array.isArray(data.roomNumbers) ? data.roomNumbers[0] : '') ||
+        titleRoom ||
         data.bookingId ||
         ''
       ).trim();
@@ -60,10 +65,13 @@ function handleNotificationNavigation(router: any, response: any) {
       } else {
         router.push('/(tabs)/activity');
       }
+    } else if (notifType.includes('store') || notifType.includes('vendor')) {
+      router.push('/(tabs)/store');
     } else if (notifType.includes('restaurant') || notifType.includes('bar')) {
       router.push('/(tabs)/activity');
     } else {
-      router.push('/(tabs)/activity');
+      // Default to Home if notification type is unknown or general
+      router.push('/(tabs)');
     }
   } catch (err) {
     console.warn('[Push DeepLink] Navigation error:', err);
@@ -208,7 +216,12 @@ export default function Root(){
         // Handle cold-start launch when app is opened directly by tapping a notification
         N.getLastNotificationResponseAsync().then((response) => {
           if (response && isMounted) {
-            handleNotificationNavigation(router, response);
+            const notifDate = response?.notification?.date ? (typeof response.notification.date === 'number' ? response.notification.date : new Date(response.notification.date).getTime()) : 0;
+            const ageMs = notifDate > 0 ? (Date.now() - notifDate) : 0;
+            // Only navigate if notification response was received in the last 15 seconds (prevents stale cached intent redirects)
+            if (notifDate === 0 || ageMs < 15000) {
+              handleNotificationNavigation(router, response);
+            }
           }
         }).catch(() => {});
 
