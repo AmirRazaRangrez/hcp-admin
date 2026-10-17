@@ -340,12 +340,15 @@ export default function AnalyticsTab() {
 
   const ok = OK.test(from) && OK.test(to);
 
-  // Load analytics and bills concurrently
+  // Load analytics, bills, and expenses concurrently
   const { data, err, busy, at, reload } = useLoad(
     async () => {
-      const an = ok ? await api.analytics(from, to) : null;
-      const bList = await api.bills().catch(() => []);
-      return { an, bList };
+      const [an, bList, expList] = await Promise.all([
+        ok ? api.analytics(from, to) : null,
+        api.bills().catch(() => []),
+        api.expenses().catch(() => [])
+      ]);
+      return { an, bList, expList };
     },
     [from, to, ok],
     `an:${from}:${to}`
@@ -354,6 +357,7 @@ export default function AnalyticsTab() {
   const s = data?.an?.analytics?.stats ?? data?.an?.stats;
   const bd = data?.an?.analytics?.breakdown;
   const allBills: any[] = data?.bList || [];
+  const allExp: any[] = Array.isArray(data?.expList) ? data?.expList : ((data?.expList as any)?.expenses || []);
 
   const n = (x: any) => Number(x) || 0;
 
@@ -385,6 +389,29 @@ export default function AnalyticsTab() {
   const restGst = n(rest?.tax);
   const restBase = n(rest?.subtotal ?? Math.max(restTotal - restGst, 0));
   const restCount = n(rest?.count ?? allBills.filter(b => b.dept === 'Restaurant').length);
+
+  const grandTotal = hospTotal + barTotal + restTotal;
+  const grandCash = hospCash + barCash + restCash;
+  const grandUpi = hospUpi + barUpi + restUpi;
+  const grandCard = hospCard + barCard + restCard;
+  const grandGst = hospGst + barGst + restGst;
+  const grandBase = hospBase + barBase + restBase;
+  const grandCheque = hospCheque;
+
+  // Expenses filtering & deductions
+  const periodExpenses = allExp.filter(e => {
+    const d = e.created_at ? String(e.created_at).slice(0, 10) : '';
+    if (from && d && d < from) return false;
+    if (to && d && d > to) return false;
+    return true;
+  });
+  const totalExpAmt = periodExpenses.reduce((sum, e) => sum + (Number(e.actual_used_amount || e.amount) || 0), 0);
+  const cashExpAmt = periodExpenses
+    .filter(e => String(e.payment_mode || 'cash').toLowerCase() === 'cash')
+    .reduce((sum, e) => sum + (Number(e.actual_used_amount || e.amount) || 0), 0);
+
+  const netRealization = Math.max(0, grandTotal - totalExpAmt);
+  const netCashDrawer = Math.max(0, grandCash - cashExpAmt);
 
   // Filter & sort bills based on user criteria
   const filteredBills = useMemo(() => {
@@ -558,7 +585,58 @@ export default function AnalyticsTab() {
       {/* ========================================================= */}
       {/* SECTION 1: HOSPITALITY ANALYTICS                          */}
       {/* ========================================================= */}
-      {(activeDept === 'all' || activeDept === 'hospitality') && (
+      {/* ========================================================= */}
+      {/* SECTION 0: UNIFIED "ALL" ANALYTICS                        */}
+      {/* ========================================================= */}
+      {activeDept === 'all' && (
+        <View style={styles.deptSection}>
+          <View style={styles.sectionHeaderCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <View style={[styles.sectionIconBadge, { backgroundColor: '#F0FDF4' }]}>
+                <PaymentIcon size={18} color="#0E8A5F" />
+              </View>
+              <Text style={styles.sectionTitle}>Total Business Realization (Hospitality + Restaurant + Bar)</Text>
+            </View>
+          </View>
+
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+            <Box t="TOTAL REALIZATION" v={money(grandTotal)} sub="All 3 Departments (Gross)" ic={<PaymentIcon size={16} color="#fff" />} solid="#0E8A5F" />
+            <Box t="NET BUSINESS INFLOW" v={money(netRealization)} sub="After Expenses Deducted" ic={<PaymentIcon size={16} color="#fff" />} solid="#0F2A2E" />
+            <Box t="CASH INFLOW (DRAWER)" v={money(netCashDrawer)} sub={cashExpAmt > 0 ? `Net of ₹${cashExpAmt.toLocaleString('en-IN')} cash exp.` : "Cash Desks Combined"} ic={<PaymentIcon size={16} color="#1E8E5A" />} col="#1E8E5A" line="#BFE3CF" bg="#F2FAF6" />
+            <Box t="EXPENSES DEDUCTED" v={`- ${money(totalExpAmt)}`} sub={`${periodExpenses.length} voucher(s) recorded`} ic={<ReceiptIcon size={16} color="#DC2626" />} col="#DC2626" line="#FECDD3" bg="#FFF1F2" />
+            <Box t="ONLINE UPI" v={money(grandUpi)} sub="All UPI QR Collections" ic={<CreditCardIcon size={16} color="#4B3FBF" />} col="#4B3FBF" line="#D5D0F5" bg="#F6F5FD" />
+            <Box t="CARD POS" v={money(grandCard)} sub="All POS Card Swipes" ic={<CreditCardIcon size={16} color="#1F6FB5" />} col="#1F6FB5" line="#C4DDF2" bg="#F2F7FC" />
+            <Box t="GST COLLECTION" v={money(grandGst)} sub="Total Taxes (Room 5% + F&B)" ic={<DocumentIcon size={16} color="#B45309" />} col="#B45309" line="#F3DFA6" bg="#FFFDF5" />
+            <Box t="NET BASE REVENUE" v={money(grandBase)} sub="Total Revenue (Excl. Taxes)" ic={<HotelIcon size={16} color="#1F3A8A" />} col="#1F3A8A" line="#9DB4E8" bg="#F0F4FA" />
+            {grandCheque > 0 && (
+              <Box t="CHEQUES REALIZED" v={money(grandCheque)} sub="Passed Cheques" ic={<PaymentIcon size={16} color="#0284C7" />} col="#0284C7" line="#BAE6FD" bg="#F0F9FF" />
+            )}
+          </View>
+
+          {/* Department Breakdown Mini-Bar */}
+          <View style={{ marginTop: 12, padding: 12, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center' }}>
+            <View style={{ alignItems: 'center' }}>
+              <Text style={{ fontSize: 10, color: '#64748B', fontWeight: '700', textTransform: 'uppercase' }}>Hospitality</Text>
+              <Text style={{ fontSize: 13, fontWeight: '800', color: '#2563EB', marginTop: 2 }}>{money(hospTotal)}</Text>
+            </View>
+            <View style={{ width: 1, height: 24, backgroundColor: '#E2E8F0' }} />
+            <View style={{ alignItems: 'center' }}>
+              <Text style={{ fontSize: 10, color: '#64748B', fontWeight: '700', textTransform: 'uppercase' }}>Bar Lounge</Text>
+              <Text style={{ fontSize: 13, fontWeight: '800', color: '#7C3AED', marginTop: 2 }}>{money(barTotal)}</Text>
+            </View>
+            <View style={{ width: 1, height: 24, backgroundColor: '#E2E8F0' }} />
+            <View style={{ alignItems: 'center' }}>
+              <Text style={{ fontSize: 10, color: '#64748B', fontWeight: '700', textTransform: 'uppercase' }}>Restaurant</Text>
+              <Text style={{ fontSize: 13, fontWeight: '800', color: '#E11D48', marginTop: 2 }}>{money(restTotal)}</Text>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* ========================================================= */}
+      {/* SECTION 1: HOSPITALITY ANALYTICS                          */}
+      {/* ========================================================= */}
+      {activeDept === 'hospitality' && (
         <View style={styles.deptSection}>
           <View style={styles.sectionHeaderCard}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -586,7 +664,7 @@ export default function AnalyticsTab() {
       {/* ========================================================= */}
       {/* SECTION 2: BAR ANALYTICS                                  */}
       {/* ========================================================= */}
-      {(activeDept === 'all' || activeDept === 'bar') && (
+      {activeDept === 'bar' && (
         <View style={styles.deptSection}>
           <View style={styles.sectionHeaderCard}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -611,7 +689,7 @@ export default function AnalyticsTab() {
       {/* ========================================================= */}
       {/* SECTION 3: RESTAURANT ANALYTICS                           */}
       {/* ========================================================= */}
-      {(activeDept === 'all' || activeDept === 'restaurant') && (
+      {activeDept === 'restaurant' && (
         <View style={styles.deptSection}>
           <View style={styles.sectionHeaderCard}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>

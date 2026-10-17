@@ -167,6 +167,10 @@ export function makeDemoApi(billCache: Map<string, any>) {
     },
     recordStorePayment: async (body: any) => wait({ success: true, updatedBill: { id: body.bill_id, status: 'FULL' } }),
     booking: async (id: any) => wait(null),
+    expenses: async () => wait([
+      { id: 1, voucher_no: 'EXP-101', category: 'Kitchen', paid_to: 'Local Market', amount: 1250, actual_used_amount: 1250, payment_mode: 'Cash', cashier_name: 'Front Desk', purpose_details: 'Vegetables & spices', created_at: new Date().toISOString() },
+      { id: 2, voucher_no: 'EXP-102', category: 'Housekeeping', paid_to: 'Clean Co', amount: 800, actual_used_amount: 800, payment_mode: 'Cash', cashier_name: 'Front Desk', purpose_details: 'Detergent & laundry supplies', created_at: new Date().toISOString() }
+    ]),
     storeVendors: async () => wait([
       { id: 1, name: 'Gupta Grocery', mobile: '9876543210' },
       { id: 2, name: 'Sharma Dairy', mobile: '9123456789' }

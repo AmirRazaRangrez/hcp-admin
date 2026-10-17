@@ -149,6 +149,7 @@ export default function Approvals() {
               {x.room_number ? <DetailRow label="Department / Room" value={`${x.dept || 'Room'} · Room ${x.room_number}`} /> : null}
               {x.members ? <DetailRow label="Guest Members" value={x.members} bold /> : null}
               {x.expected_checkout ? <DetailRow label="Expected Checkout" value={x.expected_checkout} bold color={c.ink} /> : null}
+              {x.meal_plan ? <DetailRow label="Meal Plan" value={x.meal_plan} bold color="#059669" /> : null}
               {x.discount_pct ? <DetailRow label="Discount Percentage" value={`${x.discount_pct}%`} bold color={c.brass} /> : null}
               <DetailRow label="Total Tariff (Before Discount)" value={money(x.current_total)} />
               <DetailRow
@@ -159,8 +160,9 @@ export default function Approvals() {
               />
               <DetailRow label="Net Amount After Discount" value={money(x.final_amount)} bold />
               <DetailRow
-                label="Requested By Staff"
+                label="Raised By Staff"
                 value={`${x.requested_by || 'Front Desk'} · ${when(x.requested_at)}`}
+                bold
               />
 
               {x.reason ? (
@@ -245,6 +247,8 @@ export default function Approvals() {
                   <View style={styles.divider} />
 
                   {x.room_number ? <DetailRow label="Room Number" value={`Room ${x.room_number}`} /> : null}
+                  {x.expected_checkout ? <DetailRow label="Expected Checkout" value={x.expected_checkout} bold color={c.ink} /> : null}
+                  {x.meal_plan ? <DetailRow label="Meal Plan" value={x.meal_plan} bold color="#059669" /> : null}
                   {x.discount_pct ? <DetailRow label="Discount Percentage" value={`${x.discount_pct}%`} bold color={c.brass} /> : null}
                   <DetailRow label="Subtotal (Before Discount)" value={money(x.current_total)} />
                   <DetailRow

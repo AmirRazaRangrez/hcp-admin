@@ -1,3 +1,12 @@
+import {
+  buildGuestRegistrationHTML,
+  buildGuestPaymentSummaryHTML,
+  buildGuestActivitiesSummaryHTML,
+  buildFinalBillA4HTML,
+  wrapFullA4Html,
+  formatTaxInvoiceNumber,
+  cleanVoucherNumber
+} from '../src/lib/crmPrintTemplates';
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Linking, Platform, Alert } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
@@ -32,236 +41,126 @@ const DetailRow = ({ label, value, bold, color, onPress }: any) => {
   return content;
 };
 
-// Generates an official Guest Registration Card / Check-in Form HTML for PDF printing & sharing
-function generateCheckinFormHtml(s: any): string {
-  const checkinStr = s.checkIn ? new Date(s.checkIn).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
-  const checkoutStr = s.approxCheckOut || s.checkOut ? new Date(s.approxCheckOut || s.checkOut).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
-  const regNo = s.voucherNumber || ('GRC-' + s.id);
-  const advReceipt = s.advanceReceiptNo || ('RCP-' + s.id);
+function buildCrmPayload(s: any, bills: any[]) {
+  const r = s?.raw || {};
+  const restaurantOrders = (bills || []).filter((b: any) => {
+    const t = String(b.type || b.department || b.dept || '').toLowerCase();
+    return t.includes('rest') || t.includes('food') || t.includes('f&b');
+  });
+  const barOrders = (bills || []).filter((b: any) => {
+    const t = String(b.type || b.department || b.dept || '').toLowerCase();
+    return t.includes('bar') || t.includes('liquor');
+  });
 
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Guest Registration Card - Room ${s.room}</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1e293b; padding: 24px; margin: 0; background: #fff; font-size: 13px; line-height: 1.5; }
-    .header { text-align: center; border-bottom: 2px solid #0f2a2e; padding-bottom: 14px; margin-bottom: 16px; }
-    .hotel-title { font-size: 24px; font-weight: 900; color: #0f2a2e; letter-spacing: 1px; margin: 0; }
-    .hotel-sub { font-size: 11px; color: #64748b; margin-top: 2px; }
-    .form-title { font-size: 14px; font-weight: 800; color: #b8893b; margin-top: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .meta-bar { display: flex; justify-content: space-between; background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px 12px; border-radius: 6px; margin-bottom: 16px; font-weight: 600; font-size: 12px; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-    th, td { border: 1px solid #cbd5e1; padding: 7px 10px; text-align: left; }
-    th { background: #f1f5f9; color: #0f2a2e; font-weight: 700; width: 28%; font-size: 12px; }
-    .section-head { background: #0f2a2e; color: #fff; font-size: 12px; font-weight: 800; padding: 6px 10px; text-transform: uppercase; letter-spacing: 0.5px; border-radius: 4px 4px 0 0; }
-    .signatures { display: flex; justify-content: space-between; margin-top: 40px; padding-top: 16px; }
-    .sig-box { width: 45%; text-align: center; border-top: 1px dashed #64748b; padding-top: 8px; font-size: 11px; color: #475569; font-weight: 600; }
-    .footer { font-size: 10px; color: #94a3b8; text-align: center; margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 8px; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1 class="hotel-title">HOTEL CITY PARK</h1>
-    <div class="hotel-sub">Station Road, Bilaspur, Chhattisgarh - 495001 | Tel: +91 7752-408000</div>
-    <div class="form-title">GUEST REGISTRATION CARD (CHECK-IN FORM)</div>
-  </div>
+  const checkinTime = s?.checkIn || r.checkin_time || r.check_in || new Date().toISOString();
+  const checkoutTime = s?.checkOut || s?.approxCheckOut || r.actual_checkout_time || r.checkout_time || r.approx_checkout_time || '';
 
-  <div class="meta-bar">
-    <div>Registration No: <b>${regNo}</b></div>
-    <div>Room No: <b style="font-size: 15px; color: #0f2a2e;">${s.room}</b></div>
-    <div>Date: <b>${checkinStr}</b></div>
-  </div>
+  let stayNights = 1;
+  try {
+    const d1 = new Date(checkinTime);
+    const d2 = checkoutTime ? new Date(checkoutTime) : new Date();
+    const diff = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
+    stayNights = Math.max(1, diff);
+  } catch {}
 
-  <div class="section-head">1. Guest Details</div>
-  <table>
-    <tr><th>Full Guest Name</th><td><b>${s.guest}</b></td><th>Contact Phone</th><td><b>${s.mobile || '—'}</b></td></tr>
-    <tr><th>Email Address</th><td>${s.email || '—'}</td><th>Date of Birth</th><td>${s.dob || '—'}</td></tr>
-    <tr><th>Permanent Address</th><td colspan="3">${s.address || 'India'}</td></tr>
-    <tr><th>ID Proof Document</th><td>${s.raw?.doc_type || 'Aadhaar / Gov ID'}</td><th>ID Number</th><td>${s.raw?.aadhar_number || 'Verified at desk'}</td></tr>
-  </table>
+  const voucherNo = s?.voucherNumber || r.voucher_number || r.voucher_no || (s?.id ? `260920-${s.id}` : '260920-001');
+  const invoiceNo = formatTaxInvoiceNumber(voucherNo);
 
-  <div class="section-head">2. Stay &amp; Room Information</div>
-  <table>
-    <tr><th>Room Allocated</th><td><b>Room ${s.room} (${s.roomType || 'Standard'})</b></td><th>Occupancy (Pax)</th><td>${s.adults || 1} Adult(s)${s.children ? ', ' + s.children + ' Child' : ''}</td></tr>
-    <tr><th>Check-In Date/Time</th><td><b>${checkinStr}</b></td><th>Expected Check-Out</th><td>${checkoutStr}</td></tr>
-    <tr><th>Stay Duration</th><td>${s.stayDuration || 'In-House'}</td><th>Meal Plan</th><td>${s.mealPlan || 'EP (Room Only)'}</td></tr>
-    <tr><th>Booking Source</th><td>${s.source || 'Walk-in'}</td><th>Checked-In By</th><td>${s.checkedInBy || 'Front Desk'}</td></tr>
-  </table>
+  const roomCharge = Number(s?.roomCharge || r.total_room_charge || r.room_charge || 0);
+  const foodTotal = restaurantOrders.reduce((sum: number, o: any) => sum + (Number(o.total || o.amount) || 0), 0) || Number(s?.restaurant || r.food_total || 0);
+  const barTotal = barOrders.reduce((sum: number, o: any) => sum + (Number(o.total || o.amount) || 0), 0) || Number(s?.bar || r.bar_total || 0);
+  const extraBedCharge = Number(s?.extra || r.extra_bed_charge || 0);
+  const discountAmount = Number(s?.discount || r.discount_amount || 0);
+  const taxAmount = Number(r.tax_amount || Math.round(roomCharge * 0.05));
+  const grandTotal = Number(s?.total || (roomCharge + foodTotal + barTotal + extraBedCharge - discountAmount + taxAmount));
+  const paid = Number(s?.paid || r.advance_amount || r.total_paid || 0);
+  const pending = Math.max(0, grandTotal - paid);
 
-  <div class="section-head">3. Advance Payment &amp; Tariff</div>
-  <table>
-    <tr><th>Room Tariff</th><td>₹${Number(s.roomCharge || 0).toLocaleString('en-IN')}</td><th>Advance Received</th><td><b style="color: #16a34a;">₹${Number(s.paid || 0).toLocaleString('en-IN')}</b></td></tr>
-    <tr><th>Advance Receipt No</th><td>${advReceipt}</td><th>Payment Mode</th><td>${s.paymentMode || 'Cash'}</td></tr>
-    <tr><th>Estimated Total</th><td>₹${Number(s.total || s.roomCharge || 0).toLocaleString('en-IN')}</td><th>Balance Due</th><td><b>₹${Number(s.pending || 0).toLocaleString('en-IN')}</b></td></tr>
-  </table>
+  const payments = Array.isArray(r.payments) && r.payments.length > 0
+    ? r.payments
+    : (paid > 0 ? [{
+        id: s?.id || 1,
+        receipt_no: s?.advanceReceiptNo || r.advance_receipt_no || (voucherNo ? `RCP-${voucherNo}` : 'RCP-001'),
+        amount: paid,
+        payment_mode: s?.paymentMode || r.advance_payment_mode || 'Cash',
+        created_at: checkinTime,
+        cashier: s?.checkedInBy || r.checked_in_by || 'Cashier_1',
+        purpose: 'paid while checkin : checkin',
+        utr_number: r.advance_utr_number || r.online_utr || ''
+      }] : []);
 
-  <p style="font-size: 10.5px; color: #64748b; margin-top: 16px;">
-    <b>Declaration:</b> I/We hereby declare that all particulars given above are correct. I agree to abide by the rules and regulations of Hotel City Park and agree to clear all bills upon presentation or departure.
-  </p>
-
-  <div class="signatures">
-    <div class="sig-box">Guest Signature</div>
-    <div class="sig-box">Front Desk / Duty Manager (${s.checkedInBy || 'Authorized Staff'})</div>
-  </div>
-
-  <div class="footer">
-    Generated from Hotel City Park Owner Mobile System • Computer Generated Document
-  </div>
-</body>
-</html>`;
-}
-
-// Generates an official GST Tax Invoice HTML for PDF printing & sharing
-function generateTaxInvoiceHtml(s: any, orders: any[] = []): string {
-  const invNo = 'INV-' + (s.voucherNumber || s.id);
-  const nowStr = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-  const checkinStr = s.checkIn ? new Date(s.checkIn).toLocaleDateString('en-IN') : '—';
-  const checkoutStr = s.approxCheckOut || s.checkOut ? new Date(s.approxCheckOut || s.checkOut).toLocaleDateString('en-IN') : '—';
-  
-  const roomRent = Number(s.roomCharge || s.total || 0);
-  const fnbTotal = Number(s.restaurant || 0);
-  const barTotal = Number(s.bar || 0);
-  const extraTotal = Number(s.extra || 0);
-  const discountTotal = Number(s.discount || 0);
-  
-  const subtotal = Math.max(0, roomRent + fnbTotal + barTotal + extraTotal - discountTotal);
-  const cgst = Math.round(subtotal * 0.025);
-  const sgst = Math.round(subtotal * 0.025);
-  const grandTotal = subtotal + cgst + sgst;
-  const advancePaid = Number(s.paid || 0);
-  const balanceDue = Math.max(0, grandTotal - advancePaid);
-
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Tax Invoice - Room ${s.room}</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1e293b; padding: 24px; margin: 0; background: #fff; font-size: 13px; line-height: 1.5; }
-    .header { text-align: center; border-bottom: 2px solid #0f2a2e; padding-bottom: 12px; margin-bottom: 14px; }
-    .hotel-title { font-size: 22px; font-weight: 900; color: #0f2a2e; letter-spacing: 1px; margin: 0; }
-    .hotel-sub { font-size: 11px; color: #64748b; margin-top: 2px; }
-    .invoice-title { font-size: 14px; font-weight: 800; color: #0f2a2e; margin-top: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .meta-grid { display: flex; justify-content: space-between; background: #f8fafc; border: 1px solid #e2e8f0; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 12px; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
-    th, td { border: 1px solid #cbd5e1; padding: 8px 10px; }
-    th { background: #f1f5f9; color: #0f2a2e; font-weight: 700; font-size: 12px; text-align: left; }
-    .num { text-align: right; }
-    .total-row { font-weight: 800; background: #f8fafc; }
-    .highlight-row { font-size: 15px; font-weight: 900; background: #0f2a2e; color: #fff; }
-    .highlight-row td { border-color: #0f2a2e; }
-    .signatures { display: flex; justify-content: space-between; margin-top: 40px; padding-top: 16px; }
-    .sig-box { width: 45%; text-align: center; border-top: 1px dashed #64748b; padding-top: 8px; font-size: 11px; color: #475569; font-weight: 600; }
-    .footer { font-size: 10px; color: #94a3b8; text-align: center; margin-top: 24px; border-top: 1px solid #e2e8f0; padding-top: 8px; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1 class="hotel-title">HOTEL CITY PARK</h1>
-    <div class="hotel-sub">Station Road, Bilaspur, Chhattisgarh - 495001 | GSTIN: 22AAAAA0000A1Z5 | Tel: +91 7752-408000</div>
-    <div class="invoice-title">TAX INVOICE (HOSPITALITY SERVICES)</div>
-  </div>
-
-  <div class="meta-grid">
-    <div>
-      <div>Invoice No: <b>${invNo}</b></div>
-      <div>Invoice Date: <b>${nowStr}</b></div>
-      <div>Room No: <b style="font-size: 14px;">${s.room} (${s.roomType || 'Standard'})</b></div>
-      <div>Stay Period: <b>${checkinStr} to ${checkoutStr}</b></div>
-    </div>
-    <div style="text-align: right;">
-      <div>Billed To: <b>${s.guest}</b></div>
-      <div>Mobile: <b>${s.mobile || '—'}</b></div>
-      <div>Address: ${s.address || 'India'}</div>
-      <div>Payment Mode: <b>${s.paymentMode || 'Cash'}</b></div>
-    </div>
-  </div>
-
-  <table>
-    <thead>
-      <tr>
-        <th style="width: 8%;">S.No</th>
-        <th>Description of Services</th>
-        <th style="width: 15%;">SAC / HSN</th>
-        <th style="width: 10%;" class="num">Qty</th>
-        <th style="width: 20%;" class="num">Amount (₹)</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>1</td>
-        <td><b>Room Accommodation Charges</b><br/><span style="font-size: 11px; color: #64748b;">Room ${s.room} · ${s.stayDuration || 'Stay'}</span></td>
-        <td>996311</td>
-        <td class="num">1</td>
-        <td class="num">₹${roomRent.toLocaleString('en-IN')}</td>
-      </tr>
-      ${fnbTotal > 0 ? `
-      <tr>
-        <td>2</td>
-        <td><b>Food &amp; Beverage (Room Service)</b></td>
-        <td>996331</td>
-        <td class="num">1</td>
-        <td class="num">₹${fnbTotal.toLocaleString('en-IN')}</td>
-      </tr>` : ''}
-      ${barTotal > 0 ? `
-      <tr>
-        <td>3</td>
-        <td><b>Bar Lounge Service</b></td>
-        <td>996332</td>
-        <td class="num">1</td>
-        <td class="num">₹${barTotal.toLocaleString('en-IN')}</td>
-      </tr>` : ''}
-      ${extraTotal > 0 ? `
-      <tr>
-        <td>4</td>
-        <td><b>Other Extra Services / Facilities</b></td>
-        <td>996311</td>
-        <td class="num">1</td>
-        <td class="num">₹${extraTotal.toLocaleString('en-IN')}</td>
-      </tr>` : ''}
-      ${discountTotal > 0 ? `
-      <tr>
-        <td colspan="4" class="num"><b>Special Discount Applied</b></td>
-        <td class="num" style="color: #16a34a;"><b>− ₹${discountTotal.toLocaleString('en-IN')}</b></td>
-      </tr>` : ''}
-      <tr class="total-row">
-        <td colspan="4" class="num">Taxable Value</td>
-        <td class="num">₹${subtotal.toLocaleString('en-IN')}</td>
-      </tr>
-      <tr>
-        <td colspan="4" class="num">CGST (2.5%)</td>
-        <td class="num">₹${cgst.toLocaleString('en-IN')}</td>
-      </tr>
-      <tr>
-        <td colspan="4" class="num">SGST (2.5%)</td>
-        <td class="num">₹${sgst.toLocaleString('en-IN')}</td>
-      </tr>
-      <tr class="highlight-row">
-        <td colspan="4" class="num" style="color: #fff;">TOTAL INVOICE AMOUNT</td>
-        <td class="num" style="color: #fff;">₹${grandTotal.toLocaleString('en-IN')}</td>
-      </tr>
-      <tr class="total-row">
-        <td colspan="4" class="num" style="color: #16a34a;">Less: Advance / Payments Received (${s.advanceReceiptNo || 'Desk Receipt'})</td>
-        <td class="num" style="color: #16a34a;">₹${advancePaid.toLocaleString('en-IN')}</td>
-      </tr>
-      <tr class="total-row" style="background: #fff1f2;">
-        <td colspan="4" class="num" style="color: #e11d48; font-size: 14px;">NET BALANCE DUE</td>
-        <td class="num" style="color: #e11d48; font-size: 14px;">₹${balanceDue.toLocaleString('en-IN')}</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <div class="signatures">
-    <div class="sig-box">Guest Signature</div>
-    <div class="sig-box">For Hotel City Park<br/><br/>(Authorized Signatory)</div>
-  </div>
-
-  <div class="footer">
-    Thank you for staying with Hotel City Park Bilaspur! • Subject to Bilaspur Jurisdiction
-  </div>
-</body>
-</html>`;
+  return {
+    ...r,
+    ...s,
+    room: r,
+    isOccupiedStay: true,
+    stayStatus: 'OCCUPIED',
+    stayNights,
+    guestName: s?.guest || r.guest_name || 'Valued Guest',
+    guest_name: s?.guest || r.guest_name || 'Valued Guest',
+    roomNumber: s?.room || r.room_number,
+    room_number: s?.room || r.room_number,
+    room_numbers: s?.room || r.room_number,
+    roomType: s?.roomType || r.room_type || 'Executive Deluxe',
+    room_type: s?.roomType || r.room_type || 'Executive Deluxe',
+    bookingSource: s?.source || r.booking_source || 'Walk-in',
+    booking_source: s?.source || r.booking_source || 'Walk-in',
+    otaPlatform: r.ota_platform,
+    ota_platform: r.ota_platform,
+    otaBookingId: r.ota_booking_id || r.ota_voucher_no,
+    ota_voucher_no: r.ota_booking_id || r.ota_voucher_no,
+    voucherNumber: voucherNo,
+    voucher_number: voucherNo,
+    voucher_no: voucherNo,
+    invoiceNo,
+    invoice_no: invoiceNo,
+    checkIn: checkinTime,
+    checkinTime,
+    checkin_time: checkinTime,
+    checkOut: checkoutTime,
+    checkoutTime,
+    checkout_time: checkoutTime,
+    mobile: s?.mobile || r.mobile || r.guest_phone || '',
+    phone: s?.mobile || r.mobile || r.guest_phone || '',
+    email: s?.email || r.email || '',
+    address: s?.address || r.address || 'Solapur',
+    dob: s?.dob || r.dob || '',
+    checkedInBy: s?.checkedInBy || r.checked_in_by || 'Cashier_1',
+    checked_in_by: s?.checkedInBy || r.checked_in_by || 'Cashier_1',
+    mealPlan: s?.mealPlan || r.meal_plan || 'EP (Room Only)',
+    meal_plan: s?.mealPlan || r.meal_plan || 'EP (Room Only)',
+    docType: r.doc_type || 'Aadhaar Card',
+    doc_type: r.doc_type || 'Aadhaar Card',
+    aadharNumber: r.aadhar_number || r.id_number || '',
+    aadhar_number: r.aadhar_number || r.id_number || '',
+    docFront: r.doc_front || r.id_front || r.front_image || '',
+    docBack: r.doc_back || r.id_back || r.back_image || '',
+    guestPhoto: r.guest_photo || r.photo || r.live_photo || '',
+    roomMembers: r.room_members || r.companions || [],
+    roomCharge,
+    room_charge: roomCharge,
+    foodTotal,
+    food_total: foodTotal,
+    barTotal,
+    bar_total: barTotal,
+    extraBedCharge,
+    extra_bed_charge: extraBedCharge,
+    discountAmount,
+    discount_amount: discountAmount,
+    taxAmount,
+    tax_amount: taxAmount,
+    grandTotal,
+    grand_total: grandTotal,
+    advancePaid: paid,
+    totalPaid: paid,
+    total_paid: paid,
+    paid,
+    balanceDue: pending,
+    pending,
+    payments,
+    restaurantOrders,
+    barOrders
+  };
 }
 
 export default function RoomDetails() {
@@ -285,46 +184,58 @@ export default function RoomDetails() {
       );
     } catch {}
 
-    // 2. If not found, fetch single booking details from API
-    if (!found) {
-      try {
-        const full = await api.booking(id);
-        if (full) {
-          found = {
-            id: String(full.id ?? full.booking_id ?? id),
-            room: String(full.room_number || full.room || id),
-            guest: full.guest_name || full.name || params.guest || 'In-House Guest',
-            mobile: full.mobile || full.phone || params.phone || '',
-            email: full.email || '',
-            address: full.address || '',
-            dob: full.dob || '',
-            roomType: full.room_type || 'Standard Room',
-            checkIn: full.checkin_time || new Date().toISOString(),
-            checkOut: full.actual_checkout_time || full.checkout_time,
-            approxCheckOut: full.approx_checkout_time,
-            roomCharge: Number(full.total_room_charge || full.room_charge || params.total || 0),
-            restaurant: Number(full.food_total || 0),
-            bar: Number(full.bar_total || 0),
-            extra: 0,
-            discount: Number(full.discount_amount || 0),
-            total: Number(full.grand_total || full.total_room_charge || params.total || 0),
-            paid: Number(full.total_paid || full.advance_payment || params.paid || 0),
-            pending: Math.max(0, Number(full.grand_total || full.total_room_charge || params.total || 0) - Number(full.total_paid || full.advance_payment || params.paid || 0)),
-            source: full.booking_source || 'Walk-in',
-            checkedInBy: full.checked_in_by || 'Front Desk',
-            mealPlan: full.meal_plan || 'EP (Room Only)',
-            voucherNumber: full.voucher_number || '',
-            advanceReceiptNo: full.advance_receipt_no || '',
-            paymentMode: full.advance_payment_mode || full.final_payment_mode || 'Cash',
-            splitCash: Number(full.split_cash || 0),
-            splitCard: Number(full.split_card || 0),
-            splitOnline: Number(full.split_online || 0),
-            splitCheque: Number(full.split_cheque || 0),
-            stayDuration: full.stay_duration_str || '',
-            raw: full
-          };
-        }
-      } catch {}
+    // 2. ALWAYS fetch full booking details from CRM backend to get full folio, payments, guest ID proof, address, voucher number
+    try {
+      const targetBookingId = params.bookingId || found?.booking_id || found?.id || id;
+      const full = await api.booking(targetBookingId);
+      if (full) {
+        const roomCharge = Number(full.total_room_charge || full.room_charge || full.daily_rate || found?.roomCharge || params.total || 0);
+        const fnb = Number(full.food_total || found?.restaurant || 0);
+        const bar = Number(full.bar_total || found?.bar || 0);
+        const extra = Number(full.extra || full.extra_bed_charge || found?.extra || 0);
+        const discount = Number(full.discount_amount || found?.discount || 0);
+        const tax = Number(full.tax_amount || Math.round(roomCharge * 0.05));
+        const total = Number(full.grand_total || (roomCharge + fnb + bar + extra - discount + tax) || found?.total || params.total || 0);
+        const paid = Number(full.total_paid || full.advance_payment || full.advance_amount || found?.paid || params.paid || 0);
+        const pending = Math.max(0, total - paid);
+
+        found = {
+          ...(found || {}),
+          id: String(full.id ?? full.booking_id ?? found?.id ?? id),
+          room: String(full.room_number || full.room || found?.room || id),
+          guest: full.guest_name || full.name || found?.guest || params.guest || 'In-House Guest',
+          mobile: full.mobile || full.phone || found?.mobile || params.phone || '',
+          email: full.email || found?.email || '',
+          address: full.address || found?.address || '',
+          dob: full.dob || found?.dob || '',
+          roomType: full.room_type || full.room_types || found?.roomType || 'Standard Room',
+          checkIn: full.checkin_time || found?.checkIn || new Date().toISOString(),
+          checkOut: full.actual_checkout_time || full.checkout_time || found?.checkOut,
+          approxCheckOut: full.approx_checkout_time || found?.approxCheckOut,
+          roomCharge,
+          restaurant: fnb,
+          bar,
+          extra,
+          discount,
+          total,
+          paid,
+          pending,
+          source: full.booking_source || found?.source || 'Walk-in',
+          checkedInBy: full.checked_in_by || found?.checkedInBy || 'Front Desk',
+          mealPlan: full.meal_plan || found?.mealPlan || 'EP (Room Only)',
+          voucherNumber: full.voucher_number || found?.voucherNumber || '',
+          advanceReceiptNo: full.advance_receipt_no || found?.advanceReceiptNo || '',
+          paymentMode: full.advance_payment_mode || full.final_payment_mode || found?.paymentMode || 'Cash',
+          splitCash: Number(full.split_cash || found?.splitCash || 0),
+          splitCard: Number(full.split_card || found?.splitCard || 0),
+          splitOnline: Number(full.split_online || found?.splitOnline || 0),
+          splitCheque: Number(full.split_cheque || found?.splitCheque || 0),
+          stayDuration: full.stay_duration_str || found?.stayDuration || '',
+          raw: full
+        };
+      }
+    } catch (e) {
+      console.warn('[Room Details] full booking fetch fallback:', e);
     }
 
     // 3. Fallback to notification payload params if available
@@ -377,64 +288,142 @@ export default function RoomDetails() {
     Linking.openURL(`tel:${mobile}`).catch(() => {});
   };
 
-  const handleDownloadCheckinForm = async () => {
-    if (!s) return;
-    try {
-      setDownloading('form');
-      const html = generateCheckinFormHtml(s);
-      if (Platform.OS === 'web') {
-        await Print.printAsync({ html });
-        return;
-      }
-      const file = await Print.printToFileAsync({ html });
-      let shareUri = file.uri;
-      try {
-        const dest = `${FileSystem.cacheDirectory}Checkin_Form_Room_${s.room || s.id}.pdf`;
-        await FileSystem.copyAsync({ from: file.uri, to: dest });
-        shareUri = dest;
-      } catch (copyErr) {
-        console.warn('[PDF share] fallback to direct uri:', copyErr);
-      }
+  const printHtmlDocumentWeb = (htmlContent: string, title?: string) => {
+    if (typeof document === 'undefined') return;
+    const fullHtml = wrapFullA4Html(htmlContent, title);
 
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(shareUri, {
-          mimeType: 'application/pdf',
-          dialogTitle: `Check-in Form - Room ${s.room}`,
-          UTI: 'com.adobe.pdf'
-        });
-      }
-    } catch (err: any) {
-      Alert.alert('Download Notice', 'Unable to generate PDF: ' + err.message);
-    } finally {
-      setDownloading(null);
+    let iframe = document.getElementById('admin-print-iframe') as HTMLIFrameElement;
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.id = 'admin-print-iframe';
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.style.zIndex = '-9999';
+      iframe.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(iframe);
     }
+
+    const iframeDoc = iframe.contentWindow?.document;
+    if (!iframeDoc) {
+      const printWin = window.open('', '_blank');
+      if (printWin) {
+        printWin.document.open();
+        printWin.document.write(fullHtml);
+        printWin.document.close();
+        printWin.focus();
+        setTimeout(() => {
+          printWin.print();
+        }, 500);
+      }
+      return;
+    }
+
+    iframeDoc.open();
+    iframeDoc.write(fullHtml);
+    iframeDoc.close();
+
+    setTimeout(() => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } catch (e) {
+        console.warn('[Print iframe error]', e);
+      }
+    }, 400);
   };
 
-  const handleDownloadTaxInvoice = async () => {
+  const handleDownloadDoc = async (type: 'checkin' | 'info' | 'payment' | 'activities' | 'invoice') => {
     if (!s) return;
     try {
-      setDownloading('invoice');
-      const html = generateTaxInvoiceHtml(s, bills);
-      if (Platform.OS === 'web') {
-        await Print.printAsync({ html });
-        return;
-      }
-      const file = await Print.printToFileAsync({ html });
-      let shareUri = file.uri;
-      try {
-        const dest = `${FileSystem.cacheDirectory}Tax_Invoice_Room_${s.room || s.id}.pdf`;
-        await FileSystem.copyAsync({ from: file.uri, to: dest });
-        shareUri = dest;
-      } catch (copyErr) {
-        console.warn('[PDF share] fallback to direct uri:', copyErr);
+      setDownloading(type);
+      let html = '';
+      let docTitle = '';
+      let fileName = '';
+
+      const payload = buildCrmPayload(s, bills);
+
+      if (type === 'checkin') {
+        html = buildGuestRegistrationHTML(payload, { includePhotos: false });
+        docTitle = `Check-in Form - Room ${s.room}`;
+        fileName = `Checkin_Form_Room_${s.room || s.id}.pdf`;
+      } else if (type === 'info') {
+        html = buildGuestRegistrationHTML(payload, { includePhotos: true });
+        docTitle = `Stay Info - Room ${s.room}`;
+        fileName = `Info_Summary_Room_${s.room || s.id}.pdf`;
+      } else if (type === 'payment') {
+        html = buildGuestPaymentSummaryHTML(payload);
+        docTitle = `Payment Summary - Room ${s.room}`;
+        fileName = `Payment_Summary_Room_${s.room || s.id}.pdf`;
+      } else if (type === 'activities') {
+        html = buildGuestActivitiesSummaryHTML(payload);
+        docTitle = `Activities Summary - Room ${s.room}`;
+        fileName = `Activities_Summary_Room_${s.room || s.id}.pdf`;
+      } else if (type === 'invoice') {
+        const cashierName = s.checkedInBy || 'Cashier_1';
+        const invoiceRoom = {
+          ...payload,
+          invoice_no: payload.invoiceNo
+        };
+        const invoiceCalc = {
+          ...payload,
+          grossTariff: payload.roomCharge,
+          roomCharge: payload.roomCharge,
+          roomTariffNet: payload.roomCharge,
+          tariffTax5Pct: payload.taxAmount,
+          foodTotal: payload.foodTotal,
+          barTotal: payload.barTotal,
+          hotelExtrasCharge: payload.extraBedCharge,
+          advancePaid: payload.paid,
+          chargedDays: payload.stayNights,
+          billableDays: payload.stayNights,
+          discountPct: payload.discountPct || 0,
+          discountAmount: payload.discountAmount,
+          restaurantOrders: payload.restaurantOrders,
+          barOrders: payload.barOrders
+        };
+        const invoiceSettlement = {
+          settleAmt: payload.paid,
+          refundAmt: 0,
+          settled_at: payload.checkOut || new Date(),
+          invoiceNo: payload.invoiceNo,
+          checked_out_by: cashierName
+        };
+        html = buildFinalBillA4HTML(invoiceRoom, invoiceCalc, invoiceSettlement);
+        docTitle = `Tax Invoice - Room ${s.room}`;
+        fileName = `Tax_Invoice_Room_${s.room || s.id}.pdf`;
       }
 
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(shareUri, {
-          mimeType: 'application/pdf',
-          dialogTitle: `Tax Invoice - Room ${s.room}`,
-          UTI: 'com.adobe.pdf'
-        });
+      const fullHtml = wrapFullA4Html(html, docTitle);
+
+      if (Platform.OS === 'web') {
+        printHtmlDocumentWeb(html, docTitle);
+        return;
+      }
+
+      // Android Native APK / iOS
+      try {
+        await Print.printAsync({ html: fullHtml });
+      } catch (nativePrintErr) {
+        console.warn('[Native Print] falling back to file share:', nativePrintErr);
+        const file = await Print.printToFileAsync({ html: fullHtml });
+        let shareUri = file.uri;
+        try {
+          const dest = `${FileSystem.cacheDirectory}${fileName}`;
+          await FileSystem.copyAsync({ from: file.uri, to: dest });
+          shareUri = dest;
+        } catch {}
+
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(shareUri, {
+            mimeType: 'application/pdf',
+            dialogTitle: docTitle,
+            UTI: 'com.adobe.pdf'
+          });
+        }
       }
     } catch (err: any) {
       Alert.alert('Download Notice', 'Unable to generate PDF: ' + err.message);
@@ -486,35 +475,62 @@ export default function RoomDetails() {
             </View>
           </Card>
 
-          {/* Quick PDF Action Buttons: Check-in Form & Tax Invoice */}
-          <View style={styles.actionButtonsRow}>
-            <Pressable
-              onPress={handleDownloadCheckinForm}
-              disabled={downloading !== null}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                styles.actionBtnPrimary,
-                pressed && { opacity: 0.88, transform: [{ scale: 0.98 }] }
-              ]}
-            >
-              <Text style={styles.actionBtnTextPrimary}>
-                {downloading === 'form' ? 'Preparing Form…' : '📄 Check-in Form'}
-              </Text>
-            </Pressable>
+          {/* Official Folio Documents: 5 Download Buttons */}
+          <View style={styles.actionSection}>
+            <View style={styles.actionHeaderRow}>
+              <Text style={styles.actionSectionTitle}>Official Folio Documents (PDF)</Text>
+            </View>
+            <View style={styles.docButtonsGrid}>
+              <Pressable
+                onPress={() => handleDownloadDoc('checkin')}
+                disabled={downloading !== null}
+                style={({ pressed }) => [styles.docBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={styles.docBtnText}>
+                  {downloading === 'checkin' ? '⏳ Generating…' : '📋 Check-In Form'}
+                </Text>
+              </Pressable>
 
-            <Pressable
-              onPress={handleDownloadTaxInvoice}
-              disabled={downloading !== null}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                styles.actionBtnSecondary,
-                pressed && { opacity: 0.88, transform: [{ scale: 0.98 }] }
-              ]}
-            >
-              <Text style={styles.actionBtnTextSecondary}>
-                {downloading === 'invoice' ? 'Preparing Invoice…' : '🧾 Tax Invoice'}
-              </Text>
-            </Pressable>
+              <Pressable
+                onPress={() => handleDownloadDoc('info')}
+                disabled={downloading !== null}
+                style={({ pressed }) => [styles.docBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={styles.docBtnText}>
+                  {downloading === 'info' ? '⏳ Generating…' : '💾 Info'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => handleDownloadDoc('payment')}
+                disabled={downloading !== null}
+                style={({ pressed }) => [styles.docBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={styles.docBtnText}>
+                  {downloading === 'payment' ? '⏳ Generating…' : '📄 Payment Summary'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => handleDownloadDoc('activities')}
+                disabled={downloading !== null}
+                style={({ pressed }) => [styles.docBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={styles.docBtnText}>
+                  {downloading === 'activities' ? '⏳ Generating…' : '📑 Activities Summary'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => handleDownloadDoc('invoice')}
+                disabled={downloading !== null}
+                style={({ pressed }) => [styles.docBtn, styles.docBtnInvoice, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={[styles.docBtnText, styles.docBtnInvoiceText]}>
+                  {downloading === 'invoice' ? '⏳ Generating Invoice…' : '🧾 Tax Invoice'}
+                </Text>
+              </Pressable>
+            </View>
           </View>
 
           {/* Section: Guest Details */}
@@ -555,7 +571,7 @@ export default function RoomDetails() {
             <DetailRow label="Booking Source" value={s.source || 'Walk-in'} bold />
             <DetailRow label="Meal Plan" value={s.mealPlan} />
             <DetailRow label="Checked-in By" value={s.checkedInBy || 'Front Desk Staff'} />
-            {s.voucherNumber ? <DetailRow label="Voucher / Reg No" value={s.voucherNumber} bold /> : null}
+            {s.voucherNumber ? <DetailRow label="Bill No" value={s.voucherNumber} bold /> : null}
           </Card>
 
           {/* Section: All Receipts & Payment Collections */}
@@ -587,13 +603,13 @@ export default function RoomDetails() {
 
             <View style={{ marginTop: 8 }}>
               <Pressable
-                onPress={handleDownloadTaxInvoice}
+                onPress={() => handleDownloadDoc('payment')}
                 style={({ pressed }) => [
                   styles.receiptPillBtn,
                   pressed && { opacity: 0.85 }
                 ]}
               >
-                <Text style={styles.receiptPillText}>Download Payment Receipt PDF</Text>
+                <Text style={styles.receiptPillText}>📄 Download Payment Summary PDF</Text>
               </Pressable>
             </View>
           </Card>
@@ -703,37 +719,58 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: c.ink
   },
-  actionButtonsRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 2,
-    marginBottom: 2
+  actionSection: {
+    marginTop: 4,
+    marginBottom: 4
   },
-  actionBtn: {
-    flex: 1,
-    paddingVertical: 12,
+  actionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+    paddingHorizontal: 2
+  },
+  actionSectionTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5
+  },
+  docButtonsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  docBtn: {
+    flexBasis: '48%',
+    flexGrow: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 2,
+    elevation: 1
   },
-  actionBtnPrimary: {
+  docBtnText: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: '#0F2A2E'
+  },
+  docBtnInvoice: {
+    flexBasis: '100%',
     backgroundColor: '#0F2A2E',
     borderColor: '#0F2A2E'
   },
-  actionBtnSecondary: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#C79A4B'
-  },
-  actionBtnTextPrimary: {
-    color: '#FFFFFF',
-    fontWeight: '800',
-    fontSize: 13
-  },
-  actionBtnTextSecondary: {
-    color: '#92400E',
-    fontWeight: '800',
-    fontSize: 13
+  docBtnInvoiceText: {
+    color: '#FFFFFF'
   },
   receiptPillBtn: {
     backgroundColor: '#F0FDF4',

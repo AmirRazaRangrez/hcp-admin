@@ -315,3 +315,25 @@ export const ArrowLeftIcon = ({ size = 20, color = '#FFFFFF', strokeWidth = 2.4 
   </Svg>
 );
 
+// 29. Building / Corporate BTC
+export const BuildingIcon = ({ size = 20, color = '#2563EB', strokeWidth = 2 }: IconProps) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <Path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <Path d="M6 12H4a2 2 0 0 0-2 2v8h4" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <Path d="M18 9h2a2 2 0 0 1 2 2v11h-4" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <Path d="M10 6h4" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+    <Path d="M10 10h4" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+    <Path d="M10 14h4" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+    <Path d="M10 18h4" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+  </Svg>
+);
+
+// 30. Expense / Money Outflow
+export const ExpenseIcon = ({ size = 20, color = '#E11D48', strokeWidth = 2 }: IconProps) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <Path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <Polyline points="15 15 18 18 21 15" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
+
+

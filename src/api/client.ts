@@ -12,9 +12,9 @@ const http=axios.create({timeout:4000});
 const SUPABASE_URL = 'https://hlwmsllmqfdxfmqulrat.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhsd21zbGxtcWZkeGZtcXVscmF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzc4MzgsImV4cCI6MjEwNTMxMzgzOH0.r7Nb8rEJTrZvprpf4G023nMY0suq2OqVGetG0I8esjk';
 
-async function fetchSupabaseStoreBills(status: 'live' | 'history' = 'live') {
+async function fetchSupabaseStoreBills(status: 'live' | 'history' | 'all' = 'all') {
   const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-  const filter = status === 'history' ? '&status=eq.FULL' : '&status=in.(PENDING,PARTLY)&pending_amount=gt.0';
+  const filter = status === 'history' ? '&status=eq.FULL' : (status === 'all' ? '' : '&status=in.(PENDING,PARTLY)&pending_amount=gt.0');
   const [bRes, vRes, pRes] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/store_bills?select=*${filter}&order=created_at.desc`, { headers: h }).then(r => r.json()).catch(() => []),
     fetch(`${SUPABASE_URL}/rest/v1/store_vendors?select=*`, { headers: h }).then(r => r.json()).catch(() => []),
@@ -216,25 +216,29 @@ async function fetchSupabaseOccupied() {
   const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
   const r = await fetch(`${SUPABASE_URL}/rest/v1/active_occupancies?select=*&order=room_number.asc`, { headers: h }).then(x => x.json()).catch(() => []);
   if (Array.isArray(r) && r.length > 0) {
-    return r.map((o: any) => ({
-      id: String(o.booking_id || o.room_number),
-      room: String(o.room_number),
-      guest: o.guest_name || 'In-House Guest',
-      mobile: o.guest_mobile || '',
-      type: o.room_type || 'Standard',
-      roomType: o.room_type || 'Standard Room',
-      checkIn: o.checkin_time,
-      total: 0,
-      paid: 0,
-      pending: 0,
-      roomCharge: 0,
-      restaurant: 0,
-      bar: 0,
-      extra: 0,
-      discount: 0,
-      source: 'Front Desk',
-      paymentMode: 'Cash'
-    }));
+    return r.map((o: any) => {
+      const tot = Number(o.total || o.room_charge || o.grand_total || o.total_room_charge || 0);
+      const pd = Number(o.paid || o.advance_payment || o.advance_amount || o.total_paid || 0);
+      return {
+        id: String(o.booking_id || o.room_number),
+        room: String(o.room_number),
+        guest: o.guest_name || 'In-House Guest',
+        mobile: o.guest_mobile || '',
+        type: o.room_type || 'Standard',
+        roomType: o.room_type || 'Standard Room',
+        checkIn: o.checkin_time,
+        total: tot,
+        paid: pd,
+        pending: Math.max(0, tot - pd),
+        roomCharge: Number(o.room_charge || o.total_room_charge || tot || 0),
+        restaurant: Number(o.food_total || 0),
+        bar: Number(o.bar_total || 0),
+        extra: 0,
+        discount: Number(o.discount_amount || 0),
+        source: o.booking_source || o.source || 'Front Desk',
+        paymentMode: o.payment_mode || o.advance_payment_mode || 'Cash'
+      };
+    });
   }
   return [];
 }
@@ -327,11 +331,12 @@ async function fetchSupabaseApprovals() {
       guest_name: meta.guest_name || '',
       members: meta.members || '',
       expected_checkout: meta.expected_checkout || '',
+      meal_plan: meta.meal_plan || '',
       current_total: Number(meta.current_total || 0),
       discount: Number(meta.discount || 0),
       discount_pct: Number(meta.discount_pct || 0),
       final_amount: Number(row.grand_total || meta.final_amount || 0),
-      requested_by: row.settled_by || 'Reception Staff',
+      requested_by: meta.requested_by || row.settled_by || 'Reception Staff',
       requested_at: row.created_at,
       status: isPending ? 'PENDING' : isApproved ? 'APPROVED' : 'REJECTED',
       reason: meta.reason || ''
@@ -850,7 +855,7 @@ const realApi={
       return { success: false, error: e.message };
     }
   },
- storeBills: async (status: 'live' | 'history' = 'live') => {
+ storeBills: async (status: 'live' | 'history' | 'all' = 'all') => {
   try {
    const res = await http.get('/store/bills', { params: { status } });
    if (res.data?.success && res.data?.bills) return res.data;
@@ -879,6 +884,29 @@ const realApi={
       if (res?.data?.booking) return res.data.booking;
       if (res?.data) return res.data;
     } catch {}
+    try {
+      const all = await sget(ROUTES.ROOM_BILLS, { limit: 200 });
+      const bList = arr(all?.data);
+      const clean = String(id || '').trim().toLowerCase();
+      const match = bList.find((b: any) =>
+        String(b.id || '').toLowerCase() === clean ||
+        String(b.booking_id || '').toLowerCase() === clean ||
+        String(b.room_number || '').toLowerCase() === clean ||
+        String(b.room || '').toLowerCase() === clean ||
+        String(b.voucher_number || '').toLowerCase() === clean
+      );
+      if (match) {
+        const bookId = match.id || match.booking_id || match.primary_booking_id;
+        if (bookId) {
+          try {
+            const bRes = await sget('/bookings/' + bookId);
+            const bData = bRes?.data?.booking || bRes?.data?.data;
+            if (bData) return { ...match, ...bData };
+          } catch {}
+        }
+        return match;
+      }
+    } catch {}
     const occ = await fetchSupabaseOccupied();
     const clean = String(id || '').trim().toLowerCase();
     return occ.find((o: any) =>
@@ -886,6 +914,17 @@ const realApi={
       String(o.room || '').toLowerCase() === clean ||
       String(o.room_number || '').toLowerCase() === clean
     ) || null;
+  },
+  expenses: async () => {
+    try {
+      const res = await sget('/expenses');
+      if (res?.data) return Array.isArray(res.data) ? res.data : (res.data.expenses || []);
+    } catch {}
+    try {
+      const res = await sget('/api/expenses');
+      if (res?.data) return Array.isArray(res.data) ? res.data : (res.data.expenses || []);
+    } catch {}
+    return [];
   },
   storeVendors: async () => {
   try {

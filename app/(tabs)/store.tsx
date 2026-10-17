@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,11 +8,11 @@ import {
   ScrollView,
   Linking,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   StyleSheet
 } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { api } from '../../src/api/client';
 import { Screen, Card, Badge, useLoad } from '../../src/lib/ui';
 import { c, money, when } from '../../src/lib/theme';
@@ -21,24 +21,32 @@ import {
   DocumentIcon,
   PhoneIcon,
   CreditCardIcon,
-  SparklesIcon,
   CloseIcon,
   CheckIcon,
-  AlertIcon
+  AlertIcon,
+  FilterIcon
 } from '../../src/lib/icons';
 
 export default function StoreScreen() {
-  // Main Sub-Tab: 'current' (Pending/Partly) vs 'history' (Full/Paid)
-  const [subTab, setSubTab] = useState<'current' | 'history'>('current');
+  const params = useLocalSearchParams<{ filterStatus?: string }>();
 
-  // In Current Sub-Tab: 'party' (Party-wise entire due) vs 'bill' (Bill-wise due)
+  // Primary View Mode: 'party' (Party-wise) vs 'bill' (Bill-wise)
   const [currentView, setCurrentView] = useState<'party' | 'bill'>('party');
 
-  // Search filter
+  // Search query (vendor name, phone, bill #)
   const [query, setQuery] = useState('');
 
+  // Aging status filter: 'all' | 'red' | 'yellow' | 'green' | 'pending'
+  const [filterAging, setFilterAging] = useState<'all' | 'red' | 'yellow' | 'green' | 'pending'>('all');
+
+  // Filter popup modal state
+  const [showFilterModal, setShowFilterModal] = useState(false);
+  const [filterVendor, setFilterVendor] = useState('');
+  const [filterBillDate, setFilterBillDate] = useState('');
+  const [filterPaidDate, setFilterPaidDate] = useState('');
+
   // Expanded parties in party-wise view
-  const [expandedParties, setExpandedParties] = useState<Record<number, boolean>>({});
+  const [expandedParties, setExpandedParties] = useState<Record<string, boolean>>({});
 
   // Active Bill Modal (for details & payment)
   const [selectedBill, setSelectedBill] = useState<any | null>(null);
@@ -59,11 +67,52 @@ export default function StoreScreen() {
   const [partyPayRef, setPartyPayRef] = useState<string>('');
   const [partyPaidBy, setPartyPaidBy] = useState<string>('Admin (Jaijeet sir)');
   const [partyPaying, setPartyPaying] = useState<boolean>(false);
-  
-  // Custom Themed Notice Modal State (replaces default OS Alert.alert)
+
+  // Custom Themed Notice Modal State
   const [noticeModal, setNoticeModal] = useState<{ title: string; message: string; type?: 'success' | 'error' | 'info' } | null>(null);
 
-  // Helper to safely format bill numbers without ever displaying '#N/A'
+  // Sync route params (e.g. from Home page red/yellow alert strips)
+  useEffect(() => {
+    if (params.filterStatus === 'red' || params.filterStatus === 'yellow' || params.filterStatus === 'green') {
+      setFilterAging(params.filterStatus as any);
+      setCurrentView('bill'); // Switch to bill-wise to see all matched bills immediately
+    }
+  }, [params.filterStatus]);
+
+  // Helper to format date and time
+  const formatDateTime = (dateStr: string) => {
+    if (!dateStr) return 'N/A';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      const day = d.getDate().toString().padStart(2, '0');
+      const month = (d.getMonth() + 1).toString().padStart(2, '0');
+      const year = d.getFullYear();
+      let hours = d.getHours();
+      const minutes = d.getMinutes().toString().padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      return `${day}/${month}/${year} at ${hours}:${minutes} ${ampm}`;
+    } catch (_) {
+      return dateStr;
+    }
+  };
+
+  const formatDateOnly = (dateStr: string) => {
+    if (!dateStr) return 'N/A';
+    try {
+      const parts = String(dateStr).split('T')[0].split('-');
+      if (parts.length === 3) {
+        return `${parts[2]}/${parts[1]}/${parts[0]}`;
+      }
+      return dateStr;
+    } catch (_) {
+      return dateStr;
+    }
+  };
+
+  // Helper to safely format bill numbers
   const formatBillNo = (b: any) => {
     if (!b) return 'Bill';
     const raw = String(b.bill_number || '').trim();
@@ -73,78 +122,332 @@ export default function StoreScreen() {
     return raw.startsWith('#') ? raw : `#${raw}`;
   };
 
-  // Load store bills for current and history
-  const { data: currentData, err: currentErr, busy: currentBusy, at: currentAt, reload: reloadCurrent } = useLoad(
-    () => api.storeBills('live'),
+  // Load all store bills
+  const { data: storeData, err, busy, at, reload: reloadAll } = useLoad(
+    () => api.storeBills('all'),
     [],
-    'store_live'
+    'store_bills_all'
   );
 
-  const { data: historyData, err: historyErr, busy: historyBusy, at: historyAt, reload: reloadHistory } = useLoad(
-    () => api.storeBills('history'),
-    [],
-    'store_history'
-  );
+  const rawBills: any[] = useMemo(() => storeData?.bills || [], [storeData]);
 
-  const reloadAll = () => {
-    reloadCurrent();
-    reloadHistory();
+  // Calculate Aging for a Bill:
+  // Red: pending from 25-40+ days (days >= 25)
+  // Yellow: pending from 15-25 days (days >= 15 && days < 25)
+  // Green: full paid (pending_amount <= 0 or status == FULL / PAID)
+  // Neutral: pending < 15 days
+  const getBillAging = (b: any) => {
+    const pending = Number(b.pending_amount) || 0;
+    const isFullPaid = pending <= 0 || b.status === 'FULL' || b.status === 'PAID';
+
+    if (isFullPaid) {
+      return {
+        level: 'green' as const,
+        color: '#059669',
+        bgColor: '#ECFDF5',
+        borderColor: '#10B981',
+        badgeText: '🟢 FULL PAID',
+        badgeBg: '#D1FAE5',
+        badgeColor: '#065F46',
+        days: 0,
+        label: 'Full Paid'
+      };
+    }
+
+    const rawDate = b.bill_date || b.created_at;
+    let diffDays = 0;
+    if (rawDate) {
+      try {
+        const parts = String(rawDate).split('T')[0].split('-');
+        const billDate = parts.length === 3
+          ? new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10))
+          : new Date(rawDate);
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const d1 = new Date(billDate.getFullYear(), billDate.getMonth(), billDate.getDate());
+        diffDays = Math.max(0, Math.floor((today.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
+      } catch (_) {
+        diffDays = 0;
+      }
+    }
+
+    if (diffDays >= 25) {
+      return {
+        level: 'red' as const,
+        color: '#DC2626',
+        bgColor: '#FEF2F2',
+        borderColor: '#EF4444',
+        badgeText: `🔴 ${diffDays}d Overdue`,
+        badgeBg: '#FEE2E2',
+        badgeColor: '#991B1B',
+        days: diffDays,
+        label: `${diffDays}d Overdue (25-40+d)`
+      };
+    } else if (diffDays >= 15) {
+      return {
+        level: 'yellow' as const,
+        color: '#D97706',
+        bgColor: '#FFFBEB',
+        borderColor: '#F59E0B',
+        badgeText: `🟡 ${diffDays}d Pending`,
+        badgeBg: '#FEF3C7',
+        badgeColor: '#92400E',
+        days: diffDays,
+        label: `${diffDays}d Pending (15-25d)`
+      };
+    } else {
+      return {
+        level: 'pending' as const,
+        color: '#475569',
+        bgColor: '#F8FAFC',
+        borderColor: '#CBD5E1',
+        badgeText: `⏱️ ${diffDays}d`,
+        badgeBg: '#E2E8F0',
+        badgeColor: '#334155',
+        days: diffDays,
+        label: `${diffDays}d Pending`
+      };
+    }
   };
 
-  const busy = subTab === 'current' ? currentBusy : historyBusy;
-  const err = subTab === 'current' ? currentErr : historyErr;
-  const at = subTab === 'current' ? currentAt : historyAt;
+  // Helper to match dates in various formats (YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, etc.)
+  const matchDateString = (rawDate: any, searchDate: string) => {
+    if (!rawDate || !searchDate) return false;
+    const s = searchDate.trim().toLowerCase();
+    const raw = String(rawDate).trim().toLowerCase();
+    if (raw.includes(s)) return true;
 
-  // Live data lists
-  const liveBills: any[] = useMemo(() => currentData?.bills || [], [currentData]);
-  const historyBills: any[] = useMemo(() => historyData?.bills || [], [historyData]);
-  const partySummaries: any[] = useMemo(() => currentData?.partySummary || [], [currentData]);
+    const clean = raw.split('t')[0].split(' ')[0];
+    const parts = clean.split(/[-/]/);
+    if (parts.length === 3) {
+      let y = '', m = '', d = '';
+      if (parts[0].length === 4) {
+        y = parts[0];
+        m = parts[1].padStart(2, '0');
+        d = parts[2].padStart(2, '0');
+      } else if (parts[2].length === 4) {
+        d = parts[0].padStart(2, '0');
+        m = parts[1].padStart(2, '0');
+        y = parts[2];
+      }
+      const formats = [
+        `${y}-${m}-${d}`,
+        `${d}/${m}/${y}`,
+        `${d}-${m}-${y}`,
+        `${d}/${m}`,
+        `${d}-${m}`,
+        `${y}-${m}`
+      ];
+      return formats.some(f => f.includes(s));
+    }
+    return false;
+  };
 
-  // Aggregate stats
-  const totalPendingDue = useMemo(
-    () => liveBills.reduce((acc, b) => acc + (Number(b.pending_amount) || 0), 0),
-    [liveBills]
-  );
-  const totalHistoryCleared = useMemo(
-    () => historyBills.reduce((acc, b) => acc + (Number(b.total_amount) || 0), 0),
-    [historyBills]
-  );
+  // Calculate Aging for a Party:
+  // Red: if party has any pending bill from 25-40+ days
+  // Yellow: if party has pending bill from 15-25 days (and none >= 25 days)
+  // Green: if full paid (total_pending <= 0)
+  // Neutral: if pending < 15 days
+  const getPartyAging = (p: any, billsList?: any[]) => {
+    const list = billsList || p.bills || [];
+    const pendingAmt = list.reduce((sum: number, b: any) => sum + (Number(b.pending_amount) || 0), 0);
+    if (pendingAmt <= 0) {
+      return {
+        level: 'green' as const,
+        color: '#059669',
+        bgColor: '#ECFDF5',
+        borderColor: '#10B981',
+        badgeText: '🟢 FULL PAID',
+        badgeBg: '#D1FAE5',
+        badgeColor: '#065F46',
+        label: 'Full Paid'
+      };
+    }
 
-  // Filtered lists based on search query
-  const filteredLiveBills = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return liveBills;
-    return liveBills.filter((b: any) =>
-      (b.vendor_name || '').toLowerCase().includes(q) ||
-      (b.vendor_mobile || '').includes(q) ||
-      (b.bill_number || '').toLowerCase().includes(q) ||
-      (b.notes || '').toLowerCase().includes(q)
-    );
-  }, [liveBills, query]);
+    let maxDays = 0;
+    for (const b of list) {
+      if (Number(b.pending_amount) > 0) {
+        const info = getBillAging(b);
+        if (info.days > maxDays) maxDays = info.days;
+      }
+    }
 
+    if (maxDays >= 25) {
+      return {
+        level: 'red' as const,
+        color: '#DC2626',
+        bgColor: '#FEF2F2',
+        borderColor: '#EF4444',
+        badgeText: `🔴 Due (${maxDays}d)`,
+        badgeBg: '#FEE2E2',
+        badgeColor: '#991B1B',
+        label: `Overdue (25-40+d)`
+      };
+    } else if (maxDays >= 15) {
+      return {
+        level: 'yellow' as const,
+        color: '#D97706',
+        bgColor: '#FFFBEB',
+        borderColor: '#F59E0B',
+        badgeText: `🟡 Due (${maxDays}d)`,
+        badgeBg: '#FEF3C7',
+        badgeColor: '#92400E',
+        label: `Pending (15-25d)`
+      };
+    } else {
+      return {
+        level: 'pending' as const,
+        color: '#475569',
+        bgColor: '#F8FAFC',
+        borderColor: '#CBD5E1',
+        badgeText: `⏱️ Due (${maxDays}d)`,
+        badgeBg: '#E2E8F0',
+        badgeColor: '#334155',
+        label: `Due (<15d)`
+      };
+    }
+  };
+
+  // Group and re-aggregate all bills by Party
+  const allParties = useMemo(() => {
+    const map: Record<string, any> = {};
+    rawBills.forEach(b => {
+      const vId = String(b.vendor_id || b.vendor_name || 'unknown');
+      if (!map[vId]) {
+        map[vId] = {
+          vendor_id: b.vendor_id,
+          vendor_name: b.vendor_name || 'Vendor #' + b.vendor_id,
+          vendor_mobile: b.vendor_mobile || '',
+          total_bills: 0,
+          total_amount: 0,
+          total_paid: 0,
+          total_pending: 0,
+          bills: []
+        };
+      }
+      map[vId].total_bills += 1;
+      map[vId].total_amount += Number(b.total_amount) || 0;
+      map[vId].total_paid += Number(b.paid_amount) || 0;
+      map[vId].total_pending += Number(b.pending_amount) || 0;
+      map[vId].bills.push(b);
+    });
+    return Object.values(map);
+  }, [rawBills]);
+
+  // Aggregate stats across all bills
+  const stats = useMemo(() => {
+    let pendingDue = 0;
+    let clearedTotal = 0;
+    let redCount = 0;
+    let yellowCount = 0;
+    let greenCount = 0;
+
+    rawBills.forEach(b => {
+      const pending = Number(b.pending_amount) || 0;
+      const total = Number(b.total_amount) || 0;
+      const isFull = pending <= 0 || b.status === 'FULL' || b.status === 'PAID';
+
+      if (isFull) {
+        clearedTotal += total;
+        greenCount++;
+      } else {
+        pendingDue += pending;
+        const aging = getBillAging(b);
+        if (aging.level === 'red') redCount++;
+        else if (aging.level === 'yellow') yellowCount++;
+      }
+    });
+
+    return { pendingDue, clearedTotal, redCount, yellowCount, greenCount };
+  }, [rawBills]);
+
+  // Check if a bill matches active filters
+  const matchesFilter = (b: any) => {
+    // 1. Text Query (Vendor Name, Mobile, Bill #, Notes)
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      const m =
+        (b.vendor_name || '').toLowerCase().includes(q) ||
+        (b.vendor_mobile || '').includes(q) ||
+        (b.bill_number || '').toLowerCase().includes(q) ||
+        (b.notes || '').toLowerCase().includes(q);
+      if (!m) return false;
+    }
+
+    // 2. Vendor Filter
+    if (filterVendor.trim()) {
+      const v = filterVendor.trim().toLowerCase();
+      if (!(b.vendor_name || '').toLowerCase().includes(v)) return false;
+    }
+
+    // 3. Bill Date Filter
+    if (filterBillDate.trim()) {
+      const bDate = String(b.bill_date || b.created_at || '');
+      if (!matchDateString(bDate, filterBillDate)) return false;
+    }
+
+    // 4. Paid Date Filter
+    if (filterPaidDate.trim()) {
+      const hasMatchingPayment = (b.payments || []).some((p: any) =>
+        matchDateString(p.paid_at || p.created_at || '', filterPaidDate)
+      );
+      if (!hasMatchingPayment) return false;
+    }
+
+    // 5. Aging Status Filter
+    if (filterAging !== 'all') {
+      const aging = getBillAging(b);
+      if (filterAging === 'red' && aging.level !== 'red') return false;
+      if (filterAging === 'yellow' && aging.level !== 'yellow') return false;
+      if (filterAging === 'green' && aging.level !== 'green') return false;
+      if (filterAging === 'pending' && aging.level !== 'pending') return false;
+    }
+
+    return true;
+  };
+
+  // Filtered bills list
+  const filteredBills = useMemo(() => {
+    return rawBills.filter(matchesFilter);
+  }, [rawBills, query, filterVendor, filterBillDate, filterPaidDate, filterAging]);
+
+  // Filtered parties list
   const filteredParties = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return partySummaries;
-    return partySummaries.filter((p: any) =>
-      (p.vendor_name || '').toLowerCase().includes(q) ||
-      (p.vendor_mobile || '').includes(q)
-    );
-  }, [partySummaries, query]);
+    return allParties
+      .map(p => {
+        const partyMatchingBills = p.bills.filter(matchesFilter);
+        return {
+          ...p,
+          matchingBills: partyMatchingBills
+        };
+      })
+      .filter(p => {
+        // Must have at least one bill matching the active filters
+        return p.matchingBills.length > 0;
+      });
+  }, [allParties, matchesFilter]);
 
-  const filteredHistoryBills = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return historyBills;
-    return historyBills.filter((b: any) =>
-      (b.vendor_name || '').toLowerCase().includes(q) ||
-      (b.vendor_mobile || '').includes(q) ||
-      (b.bill_number || '').toLowerCase().includes(q) ||
-      (b.notes || '').toLowerCase().includes(q)
-    );
-  }, [historyBills, query]);
+  // Active filters count for filter button badge
+  const activeFiltersCount = useMemo(() => {
+    let c = 0;
+    if (filterAging !== 'all') c++;
+    if (filterVendor.trim()) c++;
+    if (filterBillDate.trim()) c++;
+    if (filterPaidDate.trim()) c++;
+    return c;
+  }, [filterAging, filterVendor, filterBillDate, filterPaidDate]);
+
+  const clearAllFilters = () => {
+    setFilterAging('all');
+    setFilterVendor('');
+    setFilterBillDate('');
+    setFilterPaidDate('');
+    setQuery('');
+  };
 
   // Toggle party bill expansion
-  const toggleParty = (vendorId: number) => {
-    setExpandedParties(prev => ({ ...prev, [vendorId]: !prev[vendorId] }));
+  const toggleParty = (vendorId: string | number) => {
+    setExpandedParties(prev => ({ ...prev, [String(vendorId)]: !prev[String(vendorId)] }));
   };
 
   // Open Bill Details & Pay Modal
@@ -192,8 +495,8 @@ export default function StoreScreen() {
       setNoticeModal({
         title: 'Payment Recorded',
         message: isFull
-          ? `${formatBillNo(selectedBill)} marked as FULL and moved to History.`
-          : `Partial payment of ${money(amount)} recorded. Status marked as PARTLY.`,
+          ? `${formatBillNo(selectedBill)} marked as FULL PAID.`
+          : `Partial payment of ${money(amount)} recorded for ${formatBillNo(selectedBill)}.`,
         type: 'success'
       });
 
@@ -255,363 +558,504 @@ export default function StoreScreen() {
   // Dynamic status evaluation for Bill Modal
   const billParsedAmount = parseFloat(payAmount) || 0;
   const billPendingDue = selectedBill ? Number(selectedBill.pending_amount) || 0 : 0;
-  const isBillPartial = billParsedAmount > 0 && billParsedAmount < billPendingDue;
   const isBillFull = billParsedAmount >= billPendingDue && billPendingDue > 0;
   const remainingAfterBillPay = Math.max(0, billPendingDue - billParsedAmount);
 
   // Dynamic status evaluation for Party Modal
   const partyParsedAmount = parseFloat(partyPayAmount) || 0;
   const partyTotalDue = selectedParty ? Number(selectedParty.total_pending) || 0 : 0;
-  const isPartyPartial = partyParsedAmount > 0 && partyParsedAmount < partyTotalDue;
   const isPartyFull = partyParsedAmount >= partyTotalDue && partyTotalDue > 0;
   const remainingAfterPartyPay = Math.max(0, partyTotalDue - partyParsedAmount);
 
   return (
     <>
       <Screen title="Store Inward Bills" {...{ busy, reload: reloadAll, at, err }}>
-        {/* SUB-TABS: "Current" vs "History" */}
-        <View style={st.subTabBar}>
-          <Pressable
-            onPress={() => setSubTab('current')}
-            style={[st.subTabBtn, subTab === 'current' && st.subTabBtnActive]}
-          >
-            <Text style={[st.subTabLabel, subTab === 'current' && st.subTabLabelActive]}>
-              Current
-            </Text>
-            {liveBills.length > 0 && (
-              <View style={[st.tabCountBadge, subTab === 'current' && st.tabCountBadgeActive]}>
-                <Text style={[st.tabCountText, subTab === 'current' && st.tabCountTextActive]}>
-                  {liveBills.length}
-                </Text>
-              </View>
-            )}
-          </Pressable>
-
-          <Pressable
-            onPress={() => setSubTab('history')}
-            style={[st.subTabBtn, subTab === 'history' && st.subTabBtnActive]}
-          >
-            <Text style={[st.subTabLabel, subTab === 'history' && st.subTabLabelActive]}>
-              History (Paid)
-            </Text>
-            {historyBills.length > 0 && (
-              <View style={[st.tabCountBadge, subTab === 'history' && st.tabCountBadgeActive]}>
-                <Text style={[st.tabCountText, subTab === 'history' && st.tabCountTextActive]}>
-                  {historyBills.length}
-                </Text>
-              </View>
-            )}
-          </Pressable>
-        </View>
-
-        {/* SEARCH BAR */}
-        <View style={st.searchRow}>
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder={
-              subTab === 'current'
-                ? 'Search vendor, bill #, phone...'
-                : 'Search settled bills, vendor, bill #...'
-            }
-            placeholderTextColor={c.mute}
-            style={st.searchInput}
-          />
-          {query.length > 0 && (
-            <Pressable onPress={() => setQuery('')} style={st.searchClear}>
-              <CloseIcon size={14} color={c.mute} />
-            </Pressable>
-          )}
-        </View>
-
-        {/* ========================================================= */}
-        {/* SUB-TAB 1: CURRENT BILLS (Pending / Partly Due)          */}
-        {/* ========================================================= */}
-        {subTab === 'current' && (
-          <>
-            {/* KPI BANNER */}
-            <Card style={st.kpiCard}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <View>
-                  <Text style={st.kpiCaption}>TOTAL OUTSTANDING DUES</Text>
-                  <Text style={st.kpiValueDanger}>{money(totalPendingDue)}</Text>
-                </View>
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={st.kpiMini}>
-                    party: <Text style={{ fontWeight: '700', color: c.ink }}>{partySummaries.length}</Text>
-                  </Text>
-                  <Text style={st.kpiMini}>
-                    Bill: <Text style={{ fontWeight: '700', color: c.ink }}>{liveBills.length}</Text>
-                  </Text>
-                </View>
-              </View>
-            </Card>
-
-            {/* TOGGLE VIEW: Party-wise vs Bill-wise Due */}
-            <View style={st.viewToggleRow}>
-              <Pressable
-                onPress={() => setCurrentView('party')}
-                style={[st.viewToggleBtn, currentView === 'party' && st.viewToggleBtnActive]}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <UsersIcon size={14} color={currentView === 'party' ? '#fff' : c.ink} />
-                  <Text style={[st.viewToggleLabel, currentView === 'party' && st.viewToggleLabelActive]}>
-                    Party-wise
-                  </Text>
-                </View>
-              </Pressable>
-
-              <Pressable
-                onPress={() => setCurrentView('bill')}
-                style={[st.viewToggleBtn, currentView === 'bill' && st.viewToggleBtnActive]}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <DocumentIcon size={14} color={currentView === 'bill' ? '#fff' : c.ink} />
-                  <Text style={[st.viewToggleLabel, currentView === 'bill' && st.viewToggleLabelActive]}>
-                    Bill-wise Due
-                  </Text>
-                </View>
-              </Pressable>
+        {/* KPI BANNER */}
+        <Card style={st.kpiCard}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <View>
+              <Text style={st.kpiCaption}>TOTAL OUTSTANDING DUES</Text>
+              <Text style={st.kpiValueDanger}>{money(stats.pendingDue)}</Text>
             </View>
+            <View style={{ alignItems: 'flex-end', gap: 2 }}>
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                <View style={[st.kpiBadge, { backgroundColor: '#FEE2E2' }]}>
+                  <Text style={[st.kpiBadgeText, { color: '#991B1B' }]}>🔴 {stats.redCount} Overdue</Text>
+                </View>
+                <View style={[st.kpiBadge, { backgroundColor: '#FEF3C7' }]}>
+                  <Text style={[st.kpiBadgeText, { color: '#92400E' }]}>🟡 {stats.yellowCount} Warning</Text>
+                </View>
+              </View>
+              <Text style={st.kpiSubText}>
+                {allParties.length} Parties · {rawBills.length} Bills ({stats.greenCount} Cleared)
+              </Text>
+            </View>
+          </View>
+        </Card>
 
-            {/* VIEW A: PARTY-WISE ENTIRE DUE */}
-            {currentView === 'party' && (
-              <>
-                {!filteredParties.length && !busy && (
-                  <Card>
-                    <Text style={{ color: c.mute, textAlign: 'center', paddingVertical: 12 }}>
-                      {query ? 'No parties matching search.' : 'No outstanding party dues! All bills cleared.'}
-                    </Text>
-                  </Card>
-                )}
+        {/* TOP TOGGLE: Party-wise vs Bill-wise */}
+        <View style={st.viewToggleRow}>
+          <Pressable
+            onPress={() => setCurrentView('party')}
+            style={[st.viewToggleBtn, currentView === 'party' && st.viewToggleBtnActive]}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <UsersIcon size={15} color={currentView === 'party' ? '#fff' : c.ink} />
+              <Text style={[st.viewToggleLabel, currentView === 'party' && st.viewToggleLabelActive]}>
+                Party-wise
+              </Text>
+              <View style={[st.viewToggleBadge, currentView === 'party' && st.viewToggleBadgeActive]}>
+                <Text style={[st.viewToggleBadgeText, currentView === 'party' && st.viewToggleBadgeTextActive]}>
+                  {filteredParties.length}
+                </Text>
+              </View>
+            </View>
+          </Pressable>
 
-                {filteredParties.map((p: any) => {
-                  const isExpanded = !!expandedParties[p.vendor_id];
-                  const partyBills = p.bills || [];
+          <Pressable
+            onPress={() => setCurrentView('bill')}
+            style={[st.viewToggleBtn, currentView === 'bill' && st.viewToggleBtnActive]}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <DocumentIcon size={15} color={currentView === 'bill' ? '#fff' : c.ink} />
+              <Text style={[st.viewToggleLabel, currentView === 'bill' && st.viewToggleLabelActive]}>
+                Bill-wise
+              </Text>
+              <View style={[st.viewToggleBadge, currentView === 'bill' && st.viewToggleBadgeActive]}>
+                <Text style={[st.viewToggleBadgeText, currentView === 'bill' && st.viewToggleBadgeTextActive]}>
+                  {filteredBills.length}
+                </Text>
+              </View>
+            </View>
+          </Pressable>
+        </View>
 
-                  return (
-                    <Card key={p.vendor_id} style={st.partyCard}>
-                      {/* Party Header Row */}
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <View style={{ flex: 1, marginRight: 8 }}>
-                          <Text style={st.partyTitle}>{p.vendor_name}</Text>
-                          {p.vendor_mobile ? (
-                            <Pressable
-                              onPress={() => Linking.openURL(`tel:${p.vendor_mobile}`)}
-                              style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 }}
-                            >
-                              <PhoneIcon size={13} color={c.brass} />
-                              <Text style={{ color: c.brass, fontSize: 13, fontWeight: '600' }}>
-                                {p.vendor_mobile}
-                              </Text>
-                            </Pressable>
-                          ) : null}
-                        </View>
-
-                        <View style={{ alignItems: 'flex-end' }}>
-                          <Text style={st.dueLabel}>ENTIRE DUE</Text>
-                          <Text style={st.dueAmount}>{money(p.total_pending)}</Text>
-                        </View>
-                      </View>
-
-                      {/* Party Financials Breakdown */}
-                      <View style={st.partyBreakdownRow}>
-                        <Text style={st.partyMeta}>
-                          Total Billed: <Text style={{ fontWeight: '600', color: c.ink }}>{money(p.total_amount)}</Text>
-                        </Text>
-                        <Text style={st.partyMeta}>
-                          Paid: <Text style={{ fontWeight: '600', color: c.ok }}>{money(p.total_paid)}</Text>
-                        </Text>
-                        <Text style={st.partyMeta}>
-                          Bills: <Text style={{ fontWeight: '700', color: c.ink }}>{p.total_bills}</Text>
-                        </Text>
-                      </View>
-
-                      {/* Action Buttons: Pay Party & View Bills */}
-                      <View style={st.partyActionRow}>
-                        <Pressable
-                          onPress={() => openPartyModal(p)}
-                          style={st.payPartyBtn}
-                        >
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <CreditCardIcon size={14} color="#fff" />
-                            <Text style={st.payPartyBtnText}>Pay Party Balance</Text>
-                          </View>
-                        </Pressable>
-
-                        <Pressable
-                          onPress={() => toggleParty(p.vendor_id)}
-                          style={st.viewBillsToggleBtn}
-                        >
-                          <Text style={st.viewBillsToggleText}>
-                            {isExpanded ? '▲ Hide Bills' : `▼ View Bills (${partyBills.length})`}
-                          </Text>
-                        </Pressable>
-                      </View>
-
-                      {/* Expanded In-line Bills under this Party */}
-                      {isExpanded && (
-                        <View style={st.partyBillsContainer}>
-                          <Text style={st.partyBillsHeader}>Pending Bills for {p.vendor_name}:</Text>
-                          {partyBills.map((b: any) => (
-                            <Pressable
-                              key={b.id}
-                              onPress={() => openBillModal(b)}
-                              style={st.partyBillItem}
-                            >
-                              <View style={{ flex: 1 }}>
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                                  <Text style={{ fontWeight: '700', color: c.ink, fontSize: 14 }}>
-                                    {formatBillNo(b)}
-                                  </Text>
-                                  <Badge
-                                    text={b.status === 'PARTLY' ? 'PARTLY' : 'PENDING'}
-                                    color={b.status === 'PARTLY' ? c.warn : c.bad}
-                                  />
-                                </View>
-                                <Text style={{ color: c.mute, fontSize: 12, marginTop: 2 }}>
-                                  {b.bill_date || when(b.created_at)} · {b.payment_mode || 'Bank Transfer'}
-                                </Text>
-                              </View>
-
-                              <View style={{ alignItems: 'flex-end' }}>
-                                <Text style={{ fontSize: 15, fontWeight: '700', color: c.bad }}>
-                                  {money(b.pending_amount)}
-                                </Text>
-                                <Text style={{ color: c.brass, fontSize: 12, fontWeight: '700', marginTop: 2 }}>
-                                  Pay ➔
-                                </Text>
-                              </View>
-                            </Pressable>
-                          ))}
-                        </View>
-                      )}
-                    </Card>
-                  );
-                })}
-              </>
+        {/* SEARCH & FILTER BAR */}
+        <View style={st.searchFilterBar}>
+          <View style={st.searchWrap}>
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search party, bill #, phone..."
+              placeholderTextColor={c.mute}
+              style={st.searchInput}
+            />
+            {query.length > 0 && (
+              <Pressable onPress={() => setQuery('')} style={st.searchClear}>
+                <CloseIcon size={14} color={c.mute} />
+              </Pressable>
             )}
+          </View>
 
-            {/* VIEW B: BILL-WISE DUE */}
-            {currentView === 'bill' && (
-              <>
-                {!filteredLiveBills.length && !busy && (
-                  <Card>
-                    <Text style={{ color: c.mute, textAlign: 'center', paddingVertical: 12 }}>
-                      {query ? 'No bills matching search.' : 'No pending bills! All cleared.'}
-                    </Text>
-                  </Card>
-                )}
-
-                {filteredLiveBills.map((b: any) => (
-                  <Pressable key={b.id} onPress={() => openBillModal(b)}>
-                    <Card style={st.billCard}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <View style={{ flex: 1, marginRight: 8 }}>
-                          <Text style={st.billVendor}>{b.vendor_name || 'Store Vendor'}</Text>
-                          <Text style={st.billSub}>
-                            {formatBillNo(b)} · {b.bill_date || when(b.created_at)}
-                          </Text>
-                        </View>
-
-                        <View style={{ alignItems: 'flex-end' }}>
-                          <Text style={st.billDueCaption}>PENDING DUE</Text>
-                          <Text style={st.billDueAmount}>{money(b.pending_amount)}</Text>
-                        </View>
-                      </View>
-
-                      {/* Amounts row */}
-                      <View style={st.billAmountsRow}>
-                        <Text style={st.billAmtItem}>Total: {money(b.total_amount)}</Text>
-                        <Text style={st.billAmtItem}>Paid: {money(b.paid_amount || 0)}</Text>
-                        <Text style={st.billAmtItem}>Mode: {b.payment_mode || 'Bank'}</Text>
-                      </View>
-
-                      {/* Badges & Tap info */}
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-                        <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
-                          <Badge
-                            text={b.status === 'PARTLY' ? 'PARTLY PAID' : 'PENDING'}
-                            color={b.status === 'PARTLY' ? c.warn : c.bad}
-                          />
-                          {b.has_gst ? (
-                            <Badge text="GST" color={c.ink} />
-                          ) : (
-                            <Badge text="NO GST" color={c.mute} />
-                          )}
-                        </View>
-                        <Text style={{ color: c.brass, fontSize: 13, fontWeight: '700' }}>
-                          View & Pay ➔
-                        </Text>
-                      </View>
-                    </Card>
-                  </Pressable>
-                ))}
-              </>
+          {/* Filter Button */}
+          <Pressable
+            onPress={() => setShowFilterModal(true)}
+            style={[st.filterBtn, activeFiltersCount > 0 && st.filterBtnActive]}
+          >
+            <FilterIcon size={15} color={activeFiltersCount > 0 ? '#fff' : c.ink} />
+            <Text style={[st.filterBtnText, activeFiltersCount > 0 && st.filterBtnTextActive]}>
+              Filter
+            </Text>
+            {activeFiltersCount > 0 && (
+              <View style={st.filterActiveBadge}>
+                <Text style={st.filterActiveBadgeText}>{activeFiltersCount}</Text>
+              </View>
             )}
-          </>
+          </Pressable>
+        </View>
+
+        {/* ACTIVE FILTER PILLS (IF ACTIVE) */}
+        {activeFiltersCount > 0 && (
+          <View style={st.activeFilterPillsRow}>
+            {filterAging !== 'all' && (
+              <View style={st.activeFilterPill}>
+                <Text style={st.activeFilterPillText}>
+                  {filterAging === 'red' ? '🔴 25-40d Overdue' : filterAging === 'yellow' ? '🟡 15-25d Pending' : filterAging === 'green' ? '🟢 Full Paid' : '⏱️ <15d'}
+                </Text>
+                <Pressable onPress={() => setFilterAging('all')} style={st.pillCloseBtn}>
+                  <CloseIcon size={11} color="#64748B" />
+                </Pressable>
+              </View>
+            )}
+            {filterVendor.trim().length > 0 && (
+              <View style={st.activeFilterPill}>
+                <Text style={st.activeFilterPillText}>Vendor: {filterVendor}</Text>
+                <Pressable onPress={() => setFilterVendor('')} style={st.pillCloseBtn}>
+                  <CloseIcon size={11} color="#64748B" />
+                </Pressable>
+              </View>
+            )}
+            {filterBillDate.trim().length > 0 && (
+              <View style={st.activeFilterPill}>
+                <Text style={st.activeFilterPillText}>Bill Date: {filterBillDate}</Text>
+                <Pressable onPress={() => setFilterBillDate('')} style={st.pillCloseBtn}>
+                  <CloseIcon size={11} color="#64748B" />
+                </Pressable>
+              </View>
+            )}
+            {filterPaidDate.trim().length > 0 && (
+              <View style={st.activeFilterPill}>
+                <Text style={st.activeFilterPillText}>Paid Date: {filterPaidDate}</Text>
+                <Pressable onPress={() => setFilterPaidDate('')} style={st.pillCloseBtn}>
+                  <CloseIcon size={11} color="#64748B" />
+                </Pressable>
+              </View>
+            )}
+            <Pressable onPress={clearAllFilters} style={st.clearAllBtn}>
+              <Text style={st.clearAllBtnText}>Clear All</Text>
+            </Pressable>
+          </View>
         )}
 
         {/* ========================================================= */}
-        {/* SUB-TAB 2: HISTORY (All Bills Settled / Fully Paid)        */}
+        {/* VIEW 1: PARTY-WISE VIEW                                   */}
         {/* ========================================================= */}
-        {subTab === 'history' && (
+        {currentView === 'party' && (
           <>
-            {/* KPI BANNER */}
-            <Card style={st.kpiCard}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <View>
-                  <Text style={st.kpiCaption}>TOTAL CLEARED INVOICES</Text>
-                  <Text style={st.kpiValueOk}>{money(totalHistoryCleared)}</Text>
-                </View>
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={st.kpiMini}>
-                    <Text style={{ fontWeight: '700', color: c.ok }}>{historyBills.length}</Text> Bills Fully Paid
-                  </Text>
-                  <Text style={st.kpiMini}>Zero Pending Balance</Text>
-                </View>
-              </View>
-            </Card>
-
-            {!filteredHistoryBills.length && !busy && (
+            {!filteredParties.length && !busy && (
               <Card>
-                <Text style={{ color: c.mute, textAlign: 'center', paddingVertical: 12 }}>
-                  {query ? 'No history bills matching search.' : 'No paid bills recorded yet.'}
+                <Text style={{ color: c.mute, textAlign: 'center', paddingVertical: 14 }}>
+                  {activeFiltersCount > 0 ? 'No parties matching active filters.' : 'No party bills recorded yet.'}
                 </Text>
               </Card>
             )}
 
-            {filteredHistoryBills.map((b: any) => (
-              <Pressable key={b.id} onPress={() => openBillModal(b)}>
-                <Card style={st.historyCard}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <View style={{ flex: 1, marginRight: 8 }}>
-                      <Text style={st.billVendor}>{b.vendor_name || 'Store Vendor'}</Text>
-                      <Text style={st.billSub}>
-                        {formatBillNo(b)} · {b.bill_date || when(b.created_at)}
-                      </Text>
-                    </View>
+            {filteredParties.map((p: any) => {
+              const isExpanded = !!expandedParties[String(p.vendor_id)];
+              const partyBills = p.matchingBills || p.bills || [];
+              const partyAging = getPartyAging(p, partyBills);
+              const partyPending = partyBills.reduce((sum: number, b: any) => sum + (Number(b.pending_amount) || 0), 0);
 
-                    <View style={{ alignItems: 'flex-end' }}>
-                      <Text style={st.historyPaidAmount}>{money(b.total_amount)}</Text>
-                      <Badge text="FULLY PAID" color={c.ok} />
-                    </View>
-                  </View>
+              return (
+                <Card
+                  key={String(p.vendor_id)}
+                  style={[
+                    st.partyCard,
+                    { borderColor: partyAging.borderColor, backgroundColor: partyAging.bgColor }
+                  ]}
+                >
+                  {/* Party Header: Party Name, Indicator (Red/Yellow/Green), Due Amount ONLY */}
+                  <Pressable onPress={() => toggleParty(p.vendor_id)}>
+                    <View style={st.partyHeaderRow}>
+                      <View style={{ flex: 1, marginRight: 10 }}>
+                        <Text style={st.partyTitle} numberOfLines={1}>{p.vendor_name}</Text>
+                        <Text style={st.partyBillsSub}>{partyBills.length} Bill{partyBills.length === 1 ? '' : 's'}</Text>
+                      </View>
 
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-                    <Text style={{ color: c.mute, fontSize: 12 }}>
-                      Mode: {b.payment_mode || 'Bank Transfer'} · Settled
-                    </Text>
-                    <Text style={{ color: c.brass, fontSize: 12, fontWeight: '600' }}>
-                      Details ➔
-                    </Text>
-                  </View>
+                      {/* Due Amount with color indicator pill */}
+                      <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
+                        <View style={[st.partyIndicatorPill, { backgroundColor: partyAging.badgeBg }]}>
+                          <Text style={[st.partyIndicatorText, { color: partyAging.badgeColor }]}>
+                            {partyAging.badgeText}
+                          </Text>
+                        </View>
+                        <Text style={[st.partyDueAmount, { color: partyAging.color }]}>
+                          {partyPending > 0 ? money(partyPending) : 'Due: ₹0'}
+                        </Text>
+                      </View>
+
+                      {/* Expand Chevron */}
+                      <View style={st.partyChevronWrap}>
+                        <Text style={{ color: c.mute, fontSize: 13, fontWeight: '700' }}>
+                          {isExpanded ? '▲' : '▼'}
+                        </Text>
+                      </View>
+                    </View>
+                  </Pressable>
+
+                  {/* Expanded In-line Bills under this Party */}
+                  {isExpanded && (
+                    <View style={st.partyExpandedBillsWrap}>
+                      <View style={st.billsTableHeader}>
+                        <Text style={[st.tableColHeader, { flex: 1.3 }]}>Date / Bill #</Text>
+                        <Text style={[st.tableColHeader, { flex: 0.9, textAlign: 'right' }]}>Total</Text>
+                        <Text style={[st.tableColHeader, { flex: 0.9, textAlign: 'right' }]}>Paid</Text>
+                        <Text style={[st.tableColHeader, { flex: 1.1, textAlign: 'right' }]}>Pending</Text>
+                      </View>
+
+                      {partyBills.map((b: any) => {
+                        const billAging = getBillAging(b);
+
+                        return (
+                          <Pressable
+                            key={b.id}
+                            onPress={() => openBillModal(b)}
+                            style={({ pressed }) => [
+                              st.partyBillRowItem,
+                              { borderColor: billAging.borderColor, backgroundColor: billAging.bgColor },
+                              pressed && { opacity: 0.85 }
+                            ]}
+                          >
+                            <View style={{ flex: 1.3 }}>
+                              <Text style={{ fontWeight: '800', color: c.ink, fontSize: 13 }}>
+                                {formatBillNo(b)}
+                              </Text>
+                              <Text style={{ color: c.mute, fontSize: 11, marginTop: 1 }}>
+                                {formatDateOnly(b.bill_date || b.created_at)}
+                              </Text>
+                              <View style={[st.rowStatusBadge, { backgroundColor: billAging.badgeBg, marginTop: 3 }]}>
+                                <Text style={[st.rowStatusBadgeText, { color: billAging.badgeColor }]}>
+                                  {billAging.badgeText}
+                                </Text>
+                              </View>
+                            </View>
+
+                            <View style={{ flex: 0.9, alignItems: 'flex-end', justifyContent: 'center' }}>
+                              <Text style={{ fontSize: 12.5, fontWeight: '600', color: c.ink }}>
+                                {money(b.total_amount)}
+                              </Text>
+                            </View>
+
+                            <View style={{ flex: 0.9, alignItems: 'flex-end', justifyContent: 'center' }}>
+                              <Text style={{ fontSize: 12.5, fontWeight: '600', color: '#047857' }}>
+                                {money(b.paid_amount || 0)}
+                              </Text>
+                            </View>
+
+                            <View style={{ flex: 1.1, alignItems: 'flex-end', justifyContent: 'center' }}>
+                              <Text style={{ fontSize: 13, fontWeight: '800', color: billAging.color }}>
+                                {money(b.pending_amount)}
+                              </Text>
+                              {Number(b.pending_amount) > 0 ? (
+                                <Text style={{ color: c.brass, fontSize: 11, fontWeight: '800', marginTop: 1 }}>
+                                  Pay ➔
+                                </Text>
+                              ) : (
+                                <Text style={{ color: '#059669', fontSize: 10, fontWeight: '800', marginTop: 1 }}>
+                                  ✓ Cleared
+                                </Text>
+                              )}
+                            </View>
+                          </Pressable>
+                        );
+                      })}
+
+                      {partyPending > 0 && (
+                        <Pressable
+                          onPress={() => openPartyModal(p)}
+                          style={st.partyLumpPayBtn}
+                        >
+                          <CreditCardIcon size={14} color="#fff" />
+                          <Text style={st.partyLumpPayBtnText}>
+                            Pay Entire Party Balance ({money(partyPending)})
+                          </Text>
+                        </Pressable>
+                      )}
+                    </View>
+                  )}
                 </Card>
-              </Pressable>
-            ))}
+              );
+            })}
+          </>
+        )}
+
+        {/* ========================================================= */}
+        {/* VIEW 2: BILL-WISE VIEW (ALL BILLS IN ROWS)                */}
+        {/* ========================================================= */}
+        {currentView === 'bill' && (
+          <>
+            {!filteredBills.length && !busy && (
+              <Card>
+                <Text style={{ color: c.mute, textAlign: 'center', paddingVertical: 14 }}>
+                  {activeFiltersCount > 0 ? 'No bills matching active filters.' : 'No bills recorded yet.'}
+                </Text>
+              </Card>
+            )}
+
+            {filteredBills.map((b: any) => {
+              const billAging = getBillAging(b);
+
+              return (
+                <Pressable key={b.id} onPress={() => openBillModal(b)}>
+                  <Card
+                    style={[
+                      st.billRowCard,
+                      { borderColor: billAging.borderColor, backgroundColor: billAging.bgColor }
+                    ]}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      {/* Left: Vendor Name, Bill # & Date */}
+                      <View style={{ flex: 1.3, paddingRight: 6 }}>
+                        <Text style={st.billVendorTitle} numberOfLines={1}>{b.vendor_name || 'Store Vendor'}</Text>
+                        <Text style={st.billSubMeta}>
+                          {formatBillNo(b)} · {formatDateOnly(b.bill_date || b.created_at)}
+                        </Text>
+                        <View style={{ flexDirection: 'row', gap: 6, marginTop: 4, alignItems: 'center' }}>
+                          <Badge text={b.payment_mode || 'Bank'} color={c.ink} />
+                          {b.payments && b.payments.length > 0 && (
+                            <View style={st.installmentsPill}>
+                              <Text style={st.installmentsPillText}>
+                                {b.payments.length} Installment{b.payments.length > 1 ? 's' : ''}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+
+                      {/* Middle: Total & Paid */}
+                      <View style={{ flex: 0.9, alignItems: 'flex-end', justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 10, color: c.mute, fontWeight: '600' }}>TOTAL</Text>
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>{money(b.total_amount)}</Text>
+                        <Text style={{ fontSize: 10, color: '#047857', fontWeight: '700', marginTop: 2 }}>
+                          Paid: {money(b.paid_amount || 0)}
+                        </Text>
+                      </View>
+
+                      {/* Right: Pending Due with Highlight Badge (Red / Yellow / Green) */}
+                      <View style={{ flex: 1.1, alignItems: 'flex-end', justifyContent: 'center', paddingLeft: 6 }}>
+                        <View style={[st.billAgingBadge, { backgroundColor: billAging.badgeBg }]}>
+                          <Text style={[st.billAgingBadgeText, { color: billAging.badgeColor }]}>
+                            {billAging.badgeText}
+                          </Text>
+                        </View>
+                        <Text style={[st.billRowDue, { color: billAging.color }]}>
+                          {money(b.pending_amount)}
+                        </Text>
+                        <Text style={{ color: c.brass, fontSize: 11, fontWeight: '800', marginTop: 1 }}>
+                          {Number(b.pending_amount) > 0 ? 'Pay ➔' : 'View ➔'}
+                        </Text>
+                      </View>
+                    </View>
+                  </Card>
+                </Pressable>
+              );
+            })}
           </>
         )}
       </Screen>
+
+      {/* ========================================================= */}
+      {/* 🔍 MODAL: ADVANCED FILTER POPUP                           */}
+      {/* ========================================================= */}
+      <Modal
+        visible={showFilterModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowFilterModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={st.modalOverlay}
+        >
+          <View style={st.modalContainer}>
+            {/* Header */}
+            <View style={st.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <FilterIcon size={18} color={c.ink} />
+                <Text style={st.modalTitle}>Filter Store Bills</Text>
+              </View>
+              <Pressable onPress={() => setShowFilterModal(false)} style={st.modalCloseBtn}>
+                <CloseIcon size={18} color={c.mute} />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={st.modalScrollContent}>
+              {/* Filter 1: Aging Status (Red, Yellow, Green, All) */}
+              <View style={st.filterGroup}>
+                <Text style={st.filterGroupLabel}>Status & Aging Indicator:</Text>
+                <View style={st.filterChipsRow}>
+                  {[
+                    { key: 'all', label: 'All Bills' },
+                    { key: 'red', label: '🔴 Red (25-40+d)' },
+                    { key: 'yellow', label: '🟡 Yellow (15-25d)' },
+                    { key: 'green', label: '🟢 Full Paid' },
+                    { key: 'pending', label: '⏱️ Under 15d' }
+                  ].map(item => (
+                    <Pressable
+                      key={item.key}
+                      onPress={() => setFilterAging(item.key as any)}
+                      style={[
+                        st.filterChip,
+                        filterAging === item.key && st.filterChipActive
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          st.filterChipText,
+                          filterAging === item.key && st.filterChipTextActive
+                        ]}
+                      >
+                        {item.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              {/* Filter 2: Party / Vendor Name */}
+              <View style={st.filterGroup}>
+                <Text style={st.filterGroupLabel}>Party / Vendor Name:</Text>
+                <TextInput
+                  value={filterVendor}
+                  onChangeText={setFilterVendor}
+                  placeholder="e.g. Gupta, Sharma, Tara..."
+                  placeholderTextColor={c.mute}
+                  style={st.textInput}
+                />
+                {/* Quick Vendor Chips */}
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 6 }}>
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
+                    {allParties.slice(0, 6).map((p: any) => (
+                      <Pressable
+                        key={String(p.vendor_id)}
+                        onPress={() => setFilterVendor(p.vendor_name)}
+                        style={[
+                          st.quickVendorPill,
+                          filterVendor === p.vendor_name && st.quickVendorPillActive
+                        ]}
+                      >
+                        <Text style={[st.quickVendorPillText, filterVendor === p.vendor_name && { color: '#fff' }]}>
+                          {p.vendor_name}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </ScrollView>
+              </View>
+
+              {/* Filter 3: Bill Date */}
+              <View style={st.filterGroup}>
+                <Text style={st.filterGroupLabel}>Bill Date (YYYY-MM-DD or Substring):</Text>
+                <TextInput
+                  value={filterBillDate}
+                  onChangeText={setFilterBillDate}
+                  placeholder="e.g. 2026-10 or 2026-10-15"
+                  placeholderTextColor={c.mute}
+                  style={st.textInput}
+                />
+              </View>
+
+              {/* Filter 4: Paid Date */}
+              <View style={st.filterGroup}>
+                <Text style={st.filterGroupLabel}>Payment Settled Date (YYYY-MM-DD):</Text>
+                <TextInput
+                  value={filterPaidDate}
+                  onChangeText={setFilterPaidDate}
+                  placeholder="e.g. 2026-10-17"
+                  placeholderTextColor={c.mute}
+                  style={st.textInput}
+                />
+              </View>
+
+              {/* Filter Action Buttons */}
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <Pressable
+                  onPress={clearAllFilters}
+                  style={st.filterResetBtn}
+                >
+                  <Text style={st.filterResetBtnText}>Reset Filters</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setShowFilterModal(false)}
+                  style={st.filterApplyBtn}
+                >
+                  <Text style={st.filterApplyBtnText}>Apply Filters</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* ========================================================= */}
       {/* 💳 MODAL: BILL DETAILS & PAYMENT MODAL                    */}
@@ -662,7 +1106,7 @@ export default function StoreScreen() {
                 ) : null}
                 <View style={st.summaryRow}>
                   <Text style={st.summaryLabel}>Bill Date:</Text>
-                  <Text style={st.summaryVal}>{selectedBill?.bill_date || when(selectedBill?.created_at)}</Text>
+                  <Text style={st.summaryVal}>{formatDateOnly(selectedBill?.bill_date || selectedBill?.created_at)}</Text>
                 </View>
                 <View style={st.summaryRow}>
                   <Text style={st.summaryLabel}>GST Status:</Text>
@@ -673,10 +1117,6 @@ export default function StoreScreen() {
                 <View style={st.summaryRow}>
                   <Text style={st.summaryLabel}>Preferred Mode:</Text>
                   <Text style={st.summaryVal}>{selectedBill?.payment_mode || 'Bank Transfer'}</Text>
-                </View>
-                <View style={st.summaryRow}>
-                  <Text style={st.summaryLabel}>Recorded By:</Text>
-                  <Text style={st.summaryVal}>{selectedBill?.created_by || 'Store Boy'}</Text>
                 </View>
                 {selectedBill?.notes ? (
                   <View style={st.summaryRow}>
@@ -696,7 +1136,7 @@ export default function StoreScreen() {
                 </View>
                 <View style={st.summaryRow}>
                   <Text style={st.summaryLabel}>Already Paid:</Text>
-                  <Text style={[st.summaryVal, { fontWeight: '700', color: c.ok, fontSize: 16 }]}>
+                  <Text style={[st.summaryVal, { fontWeight: '700', color: '#047857', fontSize: 16 }]}>
                     {money(selectedBill?.paid_amount || 0)}
                   </Text>
                 </View>
@@ -710,21 +1150,39 @@ export default function StoreScreen() {
                 </View>
               </View>
 
-              {/* PAST PAYMENTS HISTORY LIST (IF ANY) */}
+              {/* PAYMENT HISTORY: With Date - Time, Mode, Amount */}
               {selectedBill?.payments && selectedBill.payments.length > 0 && (
-                <View style={{ marginTop: 16 }}>
-                  <Text style={st.secTitle}>Past Payments on this Bill:</Text>
+                <View style={st.historySectionBox}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                    <Text style={st.secTitle}>Payment Installment History ({selectedBill.payments.length}):</Text>
+                  </View>
                   {selectedBill.payments.map((p: any, idx: number) => (
                     <View key={p.id || idx} style={st.pastPaymentItem}>
-                      <View>
-                        <Text style={{ fontWeight: '700', color: c.ok }}>{money(p.payment_amount)}</Text>
-                        <Text style={{ color: c.mute, fontSize: 11 }}>
-                          {p.payment_mode || 'Bank Transfer'} {p.reference_no ? `· Ref: ${p.reference_no}` : ''}
-                        </Text>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                          <Text style={{ fontWeight: '800', color: '#047857', fontSize: 14 }}>
+                            {money(p.payment_amount)}
+                          </Text>
+                          <Text style={{ color: c.ink, fontSize: 12, fontWeight: '700' }}>
+                            {p.payment_mode || 'Bank Transfer'}
+                          </Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 3 }}>
+                          <Text style={{ color: c.mute, fontSize: 11 }}>
+                            📅 {formatDateTime(p.paid_at || p.created_at)}
+                          </Text>
+                          {p.paid_by && (
+                            <Text style={{ color: c.mute, fontSize: 11 }}>
+                              👤 {p.paid_by}
+                            </Text>
+                          )}
+                        </View>
+                        {p.reference_no ? (
+                          <Text style={{ color: c.brass, fontSize: 11, marginTop: 2, fontWeight: '600' }}>
+                            Ref: {p.reference_no}
+                          </Text>
+                        ) : null}
                       </View>
-                      <Text style={{ color: c.mute, fontSize: 11 }}>
-                        {when(p.paid_at || p.created_at)}
-                      </Text>
                     </View>
                   ))}
                 </View>
@@ -761,16 +1219,24 @@ export default function StoreScreen() {
                       <Text style={st.quickPillText}>Pay Full ({money(selectedBill?.pending_amount)})</Text>
                     </Pressable>
                     {Number(selectedBill?.pending_amount) > 1000 && (
-                      <Pressable
-                        onPress={() => setPayAmount(String(Math.round(Number(selectedBill?.pending_amount) / 2)))}
-                        style={st.quickPill}
-                      >
-                        <Text style={st.quickPillText}>50%</Text>
-                      </Pressable>
+                      <>
+                        <Pressable
+                          onPress={() => setPayAmount(String(Math.round(Number(selectedBill?.pending_amount) / 2)))}
+                          style={st.quickPill}
+                        >
+                          <Text style={st.quickPillText}>50%</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => setPayAmount(String(Math.round(Number(selectedBill?.pending_amount) * 0.25)))}
+                          style={st.quickPill}
+                        >
+                          <Text style={st.quickPillText}>25%</Text>
+                        </Pressable>
+                      </>
                     )}
                   </View>
 
-                  {/* DYNAMIC REMARK FEEDBACK */}
+                  {/* Dynamic Remark Feedback */}
                   {billParsedAmount > 0 && (
                     <View
                       style={[
@@ -788,7 +1254,7 @@ export default function StoreScreen() {
                       </Text>
                       <Text style={st.remarkBody}>
                         {isBillFull
-                          ? `Entered amount covers actual pending due (${money(billPendingDue)}). Bill will be marked as FULL and moved to History.`
+                          ? `Entered amount covers actual pending due (${money(billPendingDue)}). Bill will be marked as FULL PAID.`
                           : `Entered amount is less than actual due. Bill status will be marked as PARTLY. Remaining balance after payment: ${money(remainingAfterBillPay)}.`}
                       </Text>
                     </View>
@@ -852,9 +1318,9 @@ export default function StoreScreen() {
                 </View>
               ) : (
                 <View style={st.clearedNoticeBox}>
-                  <Text style={st.clearedNoticeTitle}>BILL FULLY SETTLED</Text>
+                  <Text style={st.clearedNoticeTitle}>✓ BILL FULLY SETTLED</Text>
                   <Text style={st.clearedNoticeBody}>
-                    This bill has zero pending dues and is archived in payment History.
+                    This bill has zero pending dues. All installments are cleared.
                   </Text>
                 </View>
               )}
@@ -961,7 +1427,7 @@ export default function StoreScreen() {
                     <Text style={st.remarkBody}>
                       {isPartyFull
                         ? `Payment covers all outstanding bills. Every pending bill for ${selectedParty?.vendor_name} will be marked as FULL.`
-                        : `Payment will be allocated sequentially across oldest pending bills. Any incompletely paid bill is marked as PARTLY. Remaining party due: ${money(remainingAfterPartyPay)}.`}
+                        : `Payment will be allocated sequentially across oldest pending bills. Remaining party due: ${money(remainingAfterPartyPay)}.`}
                     </Text>
                   </View>
                 )}
@@ -1026,7 +1492,7 @@ export default function StoreScreen() {
       </Modal>
 
       {/* ========================================================= */}
-      {/* 🔔 CUSTOM BRANDED NOTICE MODAL (Replaces default OS Alert) */}
+      {/* 🔔 CUSTOM BRANDED NOTICE MODAL (Replaces OS Alert)         */}
       {/* ========================================================= */}
       <Modal
         visible={!!noticeModal}
@@ -1065,82 +1531,11 @@ export default function StoreScreen() {
 }
 
 const st = StyleSheet.create({
-  // Sub-Tab Navigation Bar
-  subTabBar: {
-    flexDirection: 'row',
-    backgroundColor: '#EBECE8',
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 4
-  },
-  subTabBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderRadius: 10,
-    gap: 6
-  },
-  subTabBtnActive: {
-    backgroundColor: '#fff',
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 2
-  },
-  subTabLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: c.mute
-  },
-  subTabLabelActive: {
-    color: c.ink,
-    fontWeight: '700'
-  },
-  tabCountBadge: {
-    backgroundColor: c.line,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 12
-  },
-  tabCountBadgeActive: {
-    backgroundColor: c.ink
-  },
-  tabCountText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: c.mute
-  },
-  tabCountTextActive: {
-    color: '#fff'
-  },
-
-  // Search
-  searchRow: {
-    position: 'relative',
-    justifyContent: 'center'
-  },
-  searchInput: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 12,
-    paddingRight: 36,
-    borderWidth: 1,
-    borderColor: c.line,
-    color: c.ink,
-    fontSize: 14
-  },
-  searchClear: {
-    position: 'absolute',
-    right: 12,
-    padding: 4
-  },
-
   // KPI Banner
   kpiCard: {
     backgroundColor: '#fff',
-    paddingVertical: 14
+    paddingVertical: 14,
+    marginBottom: 4
   },
   kpiCaption: {
     fontSize: 11,
@@ -1154,14 +1549,17 @@ const st = StyleSheet.create({
     color: c.bad,
     marginTop: 2
   },
-  kpiValueOk: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: c.ok,
-    marginTop: 2
+  kpiBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6
   },
-  kpiMini: {
-    fontSize: 13,
+  kpiBadgeText: {
+    fontSize: 11,
+    fontWeight: '800'
+  },
+  kpiSubText: {
+    fontSize: 11.5,
     color: c.mute,
     marginTop: 2
   },
@@ -1170,16 +1568,16 @@ const st = StyleSheet.create({
   viewToggleRow: {
     flexDirection: 'row',
     gap: 8,
-    marginVertical: 2
+    marginVertical: 4
   },
   viewToggleBtn: {
     flex: 1,
-    paddingVertical: 9,
+    paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: c.line,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
     alignItems: 'center'
   },
   viewToggleBtnActive: {
@@ -1187,150 +1585,296 @@ const st = StyleSheet.create({
     borderColor: c.ink
   },
   viewToggleLabel: {
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 13.5,
+    fontWeight: '700',
     color: c.ink
   },
   viewToggleLabelActive: {
+    color: '#fff'
+  },
+  viewToggleBadge: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 8
+  },
+  viewToggleBadgeActive: {
+    backgroundColor: 'rgba(255,255,255,0.25)'
+  },
+  viewToggleBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: c.ink
+  },
+  viewToggleBadgeTextActive: {
+    color: '#fff'
+  },
+
+  // Search & Filter Bar
+  searchFilterBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginVertical: 4
+  },
+  searchWrap: {
+    flex: 1,
+    position: 'relative',
+    justifyContent: 'center'
+  },
+  searchInput: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingRight: 34,
+    borderWidth: 1,
+    borderColor: c.line,
+    color: c.ink,
+    fontSize: 13.5
+  },
+  searchClear: {
+    position: 'absolute',
+    right: 10,
+    padding: 4
+  },
+  filterBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: c.line,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12
+  },
+  filterBtnActive: {
+    backgroundColor: c.ink,
+    borderColor: c.ink
+  },
+  filterBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: c.ink
+  },
+  filterBtnTextActive: {
+    color: '#fff'
+  },
+  filterActiveBadge: {
+    backgroundColor: '#DC2626',
+    borderRadius: 8,
+    paddingHorizontal: 5,
+    paddingVertical: 1
+  },
+  filterActiveBadgeText: {
     color: '#fff',
-    fontWeight: '700'
+    fontSize: 10,
+    fontWeight: '800'
+  },
+
+  // Active Filter Pills
+  activeFilterPillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    alignItems: 'center',
+    marginBottom: 6
+  },
+  activeFilterPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 12,
+    paddingVertical: 3,
+    paddingHorizontal: 8
+  },
+  activeFilterPillText: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#334155'
+  },
+  pillCloseBtn: {
+    padding: 2
+  },
+  clearAllBtn: {
+    paddingVertical: 3,
+    paddingHorizontal: 6
+  },
+  clearAllBtnText: {
+    fontSize: 11.5,
+    color: '#DC2626',
+    fontWeight: '700',
+    textDecorationLine: 'underline'
   },
 
   // Party Card
   partyCard: {
     padding: 14,
-    gap: 8
+    marginBottom: 10,
+    borderWidth: 1.5,
+    borderRadius: 12
   },
-  partyTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: c.ink
-  },
-  dueLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: c.bad,
-    letterSpacing: 0.5
-  },
-  dueAmount: {
-    fontSize: 19,
-    fontWeight: '800',
-    color: c.bad
-  },
-  partyBreakdownRow: {
+  partyHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    backgroundColor: '#F8F9F7',
-    padding: 8,
-    borderRadius: 8,
-    marginTop: 2
-  },
-  partyMeta: {
-    fontSize: 12,
-    color: c.mute
-  },
-  partyActionRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4
-  },
-  payPartyBtn: {
-    flex: 1,
-    backgroundColor: c.ink,
-    borderRadius: 8,
-    paddingVertical: 10,
     alignItems: 'center'
   },
-  payPartyBtnText: {
+  partyBillsSub: {
+    fontSize: 11.5,
+    color: c.mute,
+    marginTop: 2,
+    fontWeight: '600'
+  },
+  partyChevronWrap: {
+    marginLeft: 8,
+    padding: 2
+  },
+  partyTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: c.ink
+  },
+  partyIndicatorPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginBottom: 2
+  },
+  partyIndicatorText: {
+    fontSize: 11,
+    fontWeight: '800'
+  },
+  partyDueAmount: {
+    fontSize: 18,
+    fontWeight: '900'
+  },
+
+  // Party Expanded Bills Table
+  partyExpandedBillsWrap: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.08)',
+    gap: 6
+  },
+  billsTableHeader: {
+    flexDirection: 'row',
+    paddingHorizontal: 6,
+    paddingBottom: 4
+  },
+  tableColHeader: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: c.mute,
+    textTransform: 'uppercase'
+  },
+  partyBillRowItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1
+  },
+  rowStatusBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4
+  },
+  rowStatusBadgeText: {
+    fontSize: 10,
+    fontWeight: '800'
+  },
+  partyLumpPayBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: c.ink,
+    borderRadius: 8,
+    paddingVertical: 9,
+    marginTop: 4
+  },
+  partyLumpPayBtnText: {
     color: '#fff',
     fontWeight: '700',
     fontSize: 13
   },
-  viewBillsToggleBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: c.line,
-    alignItems: 'center'
-  },
-  viewBillsToggleText: {
-    color: c.ink,
-    fontSize: 12,
-    fontWeight: '600'
-  },
-  partyBillsContainer: {
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: c.line,
-    gap: 6
-  },
-  partyBillsHeader: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: c.mute,
-    marginBottom: 4
-  },
-  partyBillItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#FAFAF8',
-    padding: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: c.line
-  },
 
-  // Bill Card
-  billCard: {
-    padding: 14,
-    gap: 4
+  // Bill Row Card (Bill-wise View)
+  billRowCard: {
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1.5,
+    borderRadius: 12
   },
-  billVendor: {
+  billRowDue: {
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '900',
+    marginTop: 2
+  },
+  billVendorTitle: {
+    fontSize: 15.5,
+    fontWeight: '800',
     color: c.ink
   },
-  billSub: {
+  billSubMeta: {
     fontSize: 12,
     color: c.mute,
     marginTop: 2
   },
-  billDueCaption: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: c.bad
+  billAgingBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6
   },
-  billDueAmount: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: c.bad
+  billAgingBadgeText: {
+    fontSize: 11,
+    fontWeight: '800'
   },
-  billAmountsRow: {
+  billAmountsGridRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    backgroundColor: '#F8F9F7',
-    padding: 8,
+    backgroundColor: 'rgba(255,255,255,0.7)',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
     borderRadius: 8,
-    marginTop: 6
+    marginVertical: 8
   },
-  billAmtItem: {
-    fontSize: 12,
-    color: c.mute
+  amtCol: {
+    flex: 1
   },
-
-  // History Card
-  historyCard: {
-    padding: 14,
-    gap: 4
+  amtColCaption: {
+    fontSize: 10.5,
+    color: c.mute,
+    fontWeight: '600'
   },
-  historyPaidAmount: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: c.ok
+  amtColVal: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: c.ink,
+    marginTop: 1
+  },
+  billCardBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  installmentsPill: {
+    backgroundColor: '#E0E7FF',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6
+  },
+  installmentsPillText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#3730A3'
   },
 
   // Modal Styles
@@ -1374,6 +1918,84 @@ const st = StyleSheet.create({
     gap: 14
   },
 
+  // Filter Modal
+  filterGroup: {
+    gap: 6
+  },
+  filterGroupLabel: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: c.ink
+  },
+  filterChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6
+  },
+  filterChip: {
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10
+  },
+  filterChipActive: {
+    backgroundColor: c.ink,
+    borderColor: c.ink
+  },
+  filterChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155'
+  },
+  filterChipTextActive: {
+    color: '#fff'
+  },
+  quickVendorPill: {
+    backgroundColor: '#F8F9FA',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8
+  },
+  quickVendorPillActive: {
+    backgroundColor: c.brass,
+    borderColor: c.brass
+  },
+  quickVendorPillText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: c.ink
+  },
+  filterResetBtn: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center'
+  },
+  filterResetBtnText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#475569'
+  },
+  filterApplyBtn: {
+    flex: 1.5,
+    backgroundColor: c.ink,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center'
+  },
+  filterApplyBtnText: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: '#fff'
+  },
+
   // Summary Box
   summaryBox: {
     backgroundColor: '#F8F9F7',
@@ -1403,23 +2025,26 @@ const st = StyleSheet.create({
     marginVertical: 4
   },
 
-  // Past Payments
+  // History Installment Section Box
+  historySectionBox: {
+    backgroundColor: '#F8F9FA',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0'
+  },
   secTitle: {
     fontSize: 13,
-    fontWeight: '700',
-    color: c.ink,
-    marginBottom: 6
+    fontWeight: '800',
+    color: c.ink
   },
   pastPaymentItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#FAFAF8',
-    padding: 8,
+    backgroundColor: '#fff',
+    padding: 10,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: c.line,
-    marginBottom: 4
+    borderColor: '#E2E8F0',
+    marginBottom: 6
   },
 
   // Pay Section
@@ -1560,26 +2185,26 @@ const st = StyleSheet.create({
 
   // Cleared notice
   clearedNoticeBox: {
-    backgroundColor: '#E8F5E9',
+    backgroundColor: '#ECFDF5',
     borderRadius: 10,
     padding: 16,
-    borderWidth: 1,
-    borderColor: c.ok,
+    borderWidth: 1.5,
+    borderColor: '#10B981',
     alignItems: 'center',
     gap: 4
   },
   clearedNoticeTitle: {
-    color: c.ok,
-    fontSize: 14,
+    color: '#047857',
+    fontSize: 15,
     fontWeight: '800'
   },
   clearedNoticeBody: {
-    color: c.text,
-    fontSize: 12,
+    color: '#065F46',
+    fontSize: 12.5,
     textAlign: 'center'
   },
 
-  // Custom Branded Notice Modal Styles
+  // Notice Modal
   noticeOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',
