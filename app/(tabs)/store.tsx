@@ -572,24 +572,64 @@ export default function StoreScreen() {
       <Screen title="Store Inward Bills" {...{ busy, reload: reloadAll, at, err }}>
         {/* KPI BANNER */}
         <Card style={st.kpiCard}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <View>
-              <Text style={st.kpiCaption}>TOTAL OUTSTANDING DUES</Text>
-              <Text style={st.kpiValueDanger}>{money(stats.pendingDue)}</Text>
+          {/* Top Row: Caption & Summary count */}
+          <View style={st.kpiTopRow}>
+            <Text style={st.kpiCaption}>TOTAL OUTSTANDING DUES</Text>
+            <Text style={st.kpiSubText} numberOfLines={1}>
+              {allParties.length} Parties · {rawBills.length} Bills
+            </Text>
+          </View>
+
+          {/* Main Row: Big ₹ Amount & Clickable Aging Chips */}
+          <View style={st.kpiMainRow}>
+            <Text style={st.kpiValueDanger}>{money(stats.pendingDue)}</Text>
+
+            <View style={st.kpiBadgesRow}>
+              <Pressable
+                onPress={() => {
+                  setFilterAging(filterAging === 'red' ? 'all' : 'red');
+                  setCurrentView('bill');
+                }}
+                style={({ pressed }) => [
+                  st.kpiBadge,
+                  {
+                    backgroundColor: filterAging === 'red' ? '#DC2626' : '#FEE2E2',
+                    borderColor: filterAging === 'red' ? '#991B1B' : '#FECACA',
+                  },
+                  pressed && { opacity: 0.82 }
+                ]}
+              >
+                <Text style={[st.kpiBadgeText, { color: filterAging === 'red' ? '#fff' : '#991B1B' }]}>
+                  🔴 {stats.redCount} Overdue
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  setFilterAging(filterAging === 'yellow' ? 'all' : 'yellow');
+                  setCurrentView('bill');
+                }}
+                style={({ pressed }) => [
+                  st.kpiBadge,
+                  {
+                    backgroundColor: filterAging === 'yellow' ? '#D97706' : '#FEF3C7',
+                    borderColor: filterAging === 'yellow' ? '#B45309' : '#FDE68A',
+                  },
+                  pressed && { opacity: 0.82 }
+                ]}
+              >
+                <Text style={[st.kpiBadgeText, { color: filterAging === 'yellow' ? '#fff' : '#92400E' }]}>
+                  🟡 {stats.yellowCount} Warning
+                </Text>
+              </Pressable>
             </View>
-            <View style={{ alignItems: 'flex-end', gap: 2 }}>
-              <View style={{ flexDirection: 'row', gap: 6 }}>
-                <View style={[st.kpiBadge, { backgroundColor: '#FEE2E2' }]}>
-                  <Text style={[st.kpiBadgeText, { color: '#991B1B' }]}>🔴 {stats.redCount} Overdue</Text>
-                </View>
-                <View style={[st.kpiBadge, { backgroundColor: '#FEF3C7' }]}>
-                  <Text style={[st.kpiBadgeText, { color: '#92400E' }]}>🟡 {stats.yellowCount} Warning</Text>
-                </View>
-              </View>
-              <Text style={st.kpiSubText}>
-                {allParties.length} Parties · {rawBills.length} Bills ({stats.greenCount} Cleared)
-              </Text>
-            </View>
+          </View>
+
+          {/* Bottom Cleared Progress Subtext */}
+          <View style={st.kpiBottomRow}>
+            <Text style={st.kpiClearedSubText}>
+              ✓ {stats.greenCount} of {rawBills.length} bills cleared ({money(stats.clearedTotal)} paid)
+            </Text>
           </View>
         </Card>
 
@@ -713,10 +753,21 @@ export default function StoreScreen() {
         {currentView === 'party' && (
           <>
             {!filteredParties.length && !busy && (
-              <Card>
-                <Text style={{ color: c.mute, textAlign: 'center', paddingVertical: 14 }}>
-                  {activeFiltersCount > 0 ? 'No parties matching active filters.' : 'No party bills recorded yet.'}
+              <Card style={st.emptyStateCard}>
+                <Text style={st.emptyStateIcon}>👥</Text>
+                <Text style={st.emptyStateTitle}>
+                  {activeFiltersCount > 0 ? 'No parties match active filters' : 'No parties found'}
                 </Text>
+                <Text style={st.emptyStateSub}>
+                  {activeFiltersCount > 0
+                    ? `No vendor party has bills matching the current active filter.`
+                    : 'Vendor party dues will appear here once inward bills are recorded.'}
+                </Text>
+                {activeFiltersCount > 0 && (
+                  <Pressable onPress={clearAllFilters} style={st.emptyStateResetBtn}>
+                    <Text style={st.emptyStateResetBtnText}>Reset / View All ({allParties.length} Parties)</Text>
+                  </Pressable>
+                )}
               </Card>
             )}
 
@@ -855,10 +906,21 @@ export default function StoreScreen() {
         {currentView === 'bill' && (
           <>
             {!filteredBills.length && !busy && (
-              <Card>
-                <Text style={{ color: c.mute, textAlign: 'center', paddingVertical: 14 }}>
-                  {activeFiltersCount > 0 ? 'No bills matching active filters.' : 'No bills recorded yet.'}
+              <Card style={st.emptyStateCard}>
+                <Text style={st.emptyStateIcon}>📋</Text>
+                <Text style={st.emptyStateTitle}>
+                  {activeFiltersCount > 0 ? 'No bills match active filters' : 'No bills recorded yet'}
                 </Text>
+                <Text style={st.emptyStateSub}>
+                  {activeFiltersCount > 0
+                    ? `There are no bills currently in ${filterAging === 'yellow' ? '15-25 days pending' : filterAging === 'red' ? '25-40 days overdue' : 'the active filter'}.`
+                    : 'Inward store bills will appear here once recorded.'}
+                </Text>
+                {activeFiltersCount > 0 && (
+                  <Pressable onPress={clearAllFilters} style={st.emptyStateResetBtn}>
+                    <Text style={st.emptyStateResetBtnText}>Reset / View All ({rawBills.length} Bills)</Text>
+                  </Pressable>
+                )}
               </Card>
             )}
 
@@ -873,47 +935,45 @@ export default function StoreScreen() {
                       { borderColor: billAging.borderColor, backgroundColor: billAging.bgColor }
                     ]}
                   >
-                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                      {/* Left: Vendor Name, Bill # & Date */}
-                      <View style={{ flex: 1.3, paddingRight: 6 }}>
-                        <Text style={st.billVendorTitle} numberOfLines={1}>{b.vendor_name || 'Store Vendor'}</Text>
-                        <Text style={st.billSubMeta}>
-                          {formatBillNo(b)} · {formatDateOnly(b.bill_date || b.created_at)}
-                        </Text>
-                        <View style={{ flexDirection: 'row', gap: 6, marginTop: 4, alignItems: 'center' }}>
-                          <Badge text={b.payment_mode || 'Bank'} color={c.ink} />
-                          {b.payments && b.payments.length > 0 && (
-                            <View style={st.installmentsPill}>
-                              <Text style={st.installmentsPillText}>
-                                {b.payments.length} Installment{b.payments.length > 1 ? 's' : ''}
-                              </Text>
-                            </View>
-                          )}
-                        </View>
-                      </View>
-
-                      {/* Middle: Total & Paid */}
-                      <View style={{ flex: 0.9, alignItems: 'flex-end', justifyContent: 'center' }}>
-                        <Text style={{ fontSize: 10, color: c.mute, fontWeight: '600' }}>TOTAL</Text>
-                        <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>{money(b.total_amount)}</Text>
-                        <Text style={{ fontSize: 10, color: '#047857', fontWeight: '700', marginTop: 2 }}>
-                          Paid: {money(b.paid_amount || 0)}
+                    {/* Header Row: Vendor Name (left) & Aging Badge (right) */}
+                    <View style={st.billCardHeaderRow}>
+                      <Text style={st.billVendorTitle} numberOfLines={1}>
+                        {b.vendor_name || 'Store Vendor'}
+                      </Text>
+                      <View style={[st.billAgingBadge, { backgroundColor: billAging.badgeBg, borderColor: billAging.borderColor }]}>
+                        <Text style={[st.billAgingBadgeText, { color: billAging.badgeColor }]}>
+                          {billAging.badgeText}
                         </Text>
                       </View>
+                    </View>
 
-                      {/* Right: Pending Due with Highlight Badge (Red / Yellow / Green) */}
-                      <View style={{ flex: 1.1, alignItems: 'flex-end', justifyContent: 'center', paddingLeft: 6 }}>
-                        <View style={[st.billAgingBadge, { backgroundColor: billAging.badgeBg }]}>
-                          <Text style={[st.billAgingBadgeText, { color: billAging.badgeColor }]}>
-                            {billAging.badgeText}
-                          </Text>
+                    {/* Meta Row: Bill # & Date (left) & Due Amount (right) */}
+                    <View style={st.billCardMetaRow}>
+                      <Text style={st.billSubMeta}>
+                        {formatBillNo(b)} · {formatDateOnly(b.bill_date || b.created_at)}
+                      </Text>
+                      <Text style={[st.billRowDue, { color: billAging.color }]}>
+                        {Number(b.pending_amount) > 0 ? `Due: ${money(b.pending_amount)}` : '✓ Cleared'}
+                      </Text>
+                    </View>
+
+                    {/* Breakdown Footer: Mode / Installments (left) & Totals (right) */}
+                    <View style={st.billCardFooterRow}>
+                      <View style={{ flexDirection: 'row', gap: 5, alignItems: 'center' }}>
+                        <View style={st.billModeTag}>
+                          <Text style={st.billModeTagText}>{b.payment_mode || 'Bank'}</Text>
                         </View>
-                        <Text style={[st.billRowDue, { color: billAging.color }]}>
-                          {money(b.pending_amount)}
-                        </Text>
-                        <Text style={{ color: c.brass, fontSize: 11, fontWeight: '800', marginTop: 1 }}>
-                          {Number(b.pending_amount) > 0 ? 'Pay ➔' : 'View ➔'}
-                        </Text>
+                        {b.payments && b.payments.length > 0 && (
+                          <View style={st.installmentsPill}>
+                            <Text style={st.installmentsPillText}>
+                              {b.payments.length} Inst.
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                        <Text style={st.billAmtSub}>Total: <Text style={{ fontWeight: '700', color: c.ink }}>{money(b.total_amount)}</Text></Text>
+                        <Text style={[st.billAmtSub, { color: '#047857' }]}>Paid: <Text style={{ fontWeight: '700' }}>{money(b.paid_amount || 0)}</Text></Text>
                       </View>
                     </View>
                   </Card>
@@ -1534,41 +1594,75 @@ const st = StyleSheet.create({
   // KPI Banner
   kpiCard: {
     backgroundColor: '#fff',
-    paddingVertical: 14,
+    padding: 14,
+    marginBottom: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0'
+  },
+  kpiTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 4
   },
   kpiCaption: {
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '800',
     color: c.mute,
-    letterSpacing: 0.5
+    letterSpacing: 0.6
+  },
+  kpiSubText: {
+    fontSize: 11.5,
+    color: c.mute,
+    fontWeight: '600'
+  },
+  kpiMainRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 2
   },
   kpiValueDanger: {
     fontSize: 24,
-    fontWeight: '800',
-    color: c.bad,
-    marginTop: 2
+    fontWeight: '900',
+    color: c.bad
+  },
+  kpiBadgesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap'
   },
   kpiBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 7,
+    borderWidth: 1
   },
   kpiBadgeText: {
     fontSize: 11,
     fontWeight: '800'
   },
-  kpiSubText: {
-    fontSize: 11.5,
-    color: c.mute,
-    marginTop: 2
+  kpiBottomRow: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9'
+  },
+  kpiClearedSubText: {
+    fontSize: 11,
+    color: '#059669',
+    fontWeight: '700'
   },
 
   // View Toggle (Party vs Bill)
   viewToggleRow: {
     flexDirection: 'row',
     gap: 8,
-    marginVertical: 4
+    marginBottom: 8
   },
   viewToggleBtn: {
     flex: 1,
@@ -1578,7 +1672,8 @@ const st = StyleSheet.create({
     backgroundColor: '#fff',
     borderWidth: 1.5,
     borderColor: '#E2E8F0',
-    alignItems: 'center'
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   viewToggleBtnActive: {
     backgroundColor: c.ink,
@@ -1615,7 +1710,7 @@ const st = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginVertical: 4
+    marginBottom: 8
   },
   searchWrap: {
     flex: 1,
@@ -1813,57 +1908,67 @@ const st = StyleSheet.create({
     borderWidth: 1.5,
     borderRadius: 12
   },
-  billRowDue: {
-    fontSize: 16,
-    fontWeight: '900',
-    marginTop: 2
+  billCardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4
   },
   billVendorTitle: {
-    fontSize: 15.5,
+    fontSize: 15,
     fontWeight: '800',
-    color: c.ink
-  },
-  billSubMeta: {
-    fontSize: 12,
-    color: c.mute,
-    marginTop: 2
+    color: c.ink,
+    flex: 1,
+    marginRight: 8
   },
   billAgingBadge: {
-    paddingHorizontal: 8,
+    paddingHorizontal: 7,
     paddingVertical: 3,
-    borderRadius: 6
+    borderRadius: 6,
+    borderWidth: 1
   },
   billAgingBadgeText: {
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: '800'
   },
-  billAmountsGridRow: {
+  billCardMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginBottom: 6
+  },
+  billSubMeta: {
+    fontSize: 11.5,
+    color: c.mute
+  },
+  billRowDue: {
+    fontSize: 15,
+    fontWeight: '900'
+  },
+  billCardFooterRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    marginVertical: 8
+    alignItems: 'center',
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.06)'
   },
-  amtCol: {
-    flex: 1
+  billModeTag: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#CBD5E1'
   },
-  amtColCaption: {
+  billModeTagText: {
     fontSize: 10.5,
-    color: c.mute,
-    fontWeight: '600'
-  },
-  amtColVal: {
-    fontSize: 14,
     fontWeight: '700',
-    color: c.ink,
-    marginTop: 1
+    color: '#334155'
   },
-  billCardBottomRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center'
+  billAmtSub: {
+    fontSize: 11,
+    color: c.mute
   },
   installmentsPill: {
     backgroundColor: '#E0E7FF',
@@ -1875,6 +1980,47 @@ const st = StyleSheet.create({
     fontSize: 10.5,
     fontWeight: '700',
     color: '#3730A3'
+  },
+
+  // Empty State Card
+  emptyStateCard: {
+    backgroundColor: '#fff',
+    paddingVertical: 28,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginVertical: 4
+  },
+  emptyStateIcon: {
+    fontSize: 32,
+    marginBottom: 10
+  },
+  emptyStateTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: c.ink,
+    marginBottom: 6,
+    textAlign: 'center'
+  },
+  emptyStateSub: {
+    fontSize: 12.5,
+    color: c.mute,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 14
+  },
+  emptyStateResetBtn: {
+    backgroundColor: c.ink,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8
+  },
+  emptyStateResetBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700'
   },
 
   // Modal Styles

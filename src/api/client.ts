@@ -214,29 +214,73 @@ const ts=(s?:string)=>{const t=new Date(String(s||'').replace(' ','T')).getTime(
 export type Ev={id:string;type:string;tags:string[];title:string;body:string;created_at:string;dept:string;billId?:any;discount?:number;total?:number;guest?:string;room?:string;by?:string};
 async function fetchSupabaseOccupied() {
   const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/active_occupancies?select=*&order=room_number.asc`, { headers: h }).then(x => x.json()).catch(() => []);
+  const [r, folios] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/active_occupancies?select=*&order=room_number.asc`, { headers: h }).then(x => x.json()).catch(() => []),
+    fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.room_folio&select=*`, { headers: h }).then(x => x.json()).catch(() => [])
+  ]);
+
+  const folioMap = new Map();
+  if (Array.isArray(folios)) {
+    folios.forEach((f: any) => {
+      let meta: any = {};
+      try { meta = JSON.parse(f.items_summary || '{}'); } catch (_) {}
+      folioMap.set(String(f.room_number).trim(), { ...f, meta });
+    });
+  }
+
   if (Array.isArray(r) && r.length > 0) {
     return r.map((o: any) => {
-      const tot = Number(o.total || o.room_charge || o.grand_total || o.total_room_charge || 0);
-      const pd = Number(o.paid || o.advance_payment || o.advance_amount || o.total_paid || 0);
+      const roomNum = String(o.room_number).trim();
+      const folioData = folioMap.get(roomNum);
+      const meta = folioData?.meta || {};
+
+      // Standard base rate by room type if not yet recorded
+      const rType = String(o.room_type || '').toLowerCase();
+      const baseDailyRate = rType.includes('pent') ? 4500 : (rType.includes('suit') ? 3500 : (rType.includes('deluxe') ? 2200 : 2400));
+
+      let stayNights = 1;
+      try {
+        const d1 = new Date(o.checkin_time || Date.now());
+        const d2 = new Date();
+        stayNights = Math.max(1, Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
+      } catch (_) {}
+
+      const roomCharge = Number(meta.roomCharge || folioData?.subtotal || o.room_charge || o.total_room_charge || (baseDailyRate * stayNights));
+      const tax = Number(folioData?.gst || meta.tax || Math.round(roomCharge * 0.05));
+      const foodTotal = Number(meta.foodTotal || meta.restaurant || o.food_total || 0);
+      const barTotal = Number(meta.barTotal || meta.bar || o.bar_total || 0);
+      const extra = Number(meta.extra || 0);
+      const discount = Number(meta.discount || o.discount_amount || 0);
+
+      const tot = Number(meta.total || folioData?.grand_total || (roomCharge + foodTotal + barTotal + extra - discount + tax));
+      const pd = Number(meta.paid || (folioData?.status === 'settled' ? tot : 0) || o.paid || o.advance_payment || o.total_paid || tot);
+      const pending = Math.max(0, tot - pd);
+
       return {
         id: String(o.booking_id || o.room_number),
         room: String(o.room_number),
-        guest: o.guest_name || 'In-House Guest',
-        mobile: o.guest_mobile || '',
+        guest: o.guest_name || meta.guestName || 'In-House Guest',
+        mobile: o.guest_mobile || meta.mobile || '',
+        address: meta.address || '',
+        dob: meta.dob || '',
         type: o.room_type || 'Standard',
-        roomType: o.room_type || 'Standard Room',
-        checkIn: o.checkin_time,
+        roomType: o.room_type || meta.roomType || 'Standard Room',
+        checkIn: o.checkin_time || meta.checkinTime,
+        approxCheckOut: meta.approxCheckout || '',
         total: tot,
         paid: pd,
-        pending: Math.max(0, tot - pd),
-        roomCharge: Number(o.room_charge || o.total_room_charge || tot || 0),
-        restaurant: Number(o.food_total || 0),
-        bar: Number(o.bar_total || 0),
-        extra: 0,
-        discount: Number(o.discount_amount || 0),
-        source: o.booking_source || o.source || 'Front Desk',
-        paymentMode: o.payment_mode || o.advance_payment_mode || 'Cash'
+        pending: pending,
+        roomCharge: roomCharge,
+        restaurant: foodTotal,
+        bar: barTotal,
+        extra: extra,
+        discount: discount,
+        tax: tax,
+        voucherNumber: meta.voucherNumber || folioData?.bill_no || (o.booking_id ? `260920-${o.booking_id}` : ''),
+        advanceReceiptNo: meta.advanceReceiptNo || (o.booking_id ? `RCP-260920-${o.booking_id}` : ''),
+        source: meta.source || o.booking_source || o.source || 'Walk-in',
+        checkedInBy: meta.checkedInBy || 'Front Desk',
+        paymentMode: meta.paymentMode || o.payment_mode || o.advance_payment_mode || 'Cash'
       };
     });
   }
@@ -924,6 +968,78 @@ const realApi={
       const res = await sget('/api/expenses');
       if (res?.data) return Array.isArray(res.data) ? res.data : (res.data.expenses || []);
     } catch {}
+    return [];
+  },
+  fbState: async (dept: 'restaurant' | 'bar' = 'restaurant') => {
+    try {
+      const res = await http.get('/fb/state');
+      if (res.data?.success) return res.data;
+    } catch (_) {}
+    try {
+      const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.fb_live_state&limit=1`, { headers: h }).then(x => x.json()).catch(() => []);
+      if (Array.isArray(r) && r[0]?.items_summary) {
+        return JSON.parse(r[0].items_summary);
+      }
+    } catch (_) {}
+    return {
+      restaurantTables: [],
+      barTables: [],
+      restaurantOrders: [],
+      barOrders: []
+    };
+  },
+  fbOrders: async (dept: 'restaurant' | 'bar' = 'restaurant', filter: 'settled' | 'all' = 'all') => {
+    try {
+      if (filter === 'settled') {
+        const endpoint = dept === 'bar' ? '/bar/settled-bills' : '/restaurant/settled-bills';
+        const res = await http.get(endpoint);
+        const bills = res.data?.bills || res.data?.orders || res.data?.data || [];
+        if (Array.isArray(bills) && bills.length > 0) {
+          return bills.map((o: any) => {
+            let items = o.items;
+            if (!items && o.items_json) {
+              try { items = typeof o.items_json === 'string' ? JSON.parse(o.items_json) : o.items_json; } catch (_) { items = []; }
+            }
+            return {
+              ...o,
+              items: items || [],
+              grand_total: o.grand_total || o.total || o.total_amount,
+              is_settled: true,
+              dept: dept === 'bar' ? 'Bar Lounge' : 'Restaurant'
+            };
+          });
+        }
+      }
+      const endpoint = dept === 'bar' ? '/bar/orders' : '/restaurant/orders';
+      const res = await http.get(endpoint);
+      const orders = res.data?.orders || res.data?.data || [];
+      const parsed = orders.map((o: any) => {
+        let items = o.items;
+        if (!items && o.items_json) {
+          try { items = typeof o.items_json === 'string' ? JSON.parse(o.items_json) : o.items_json; } catch (_) { items = []; }
+        }
+        return {
+          ...o,
+          items: items || [],
+          grand_total: o.grand_total || o.total || o.total_amount,
+          is_settled: o.is_paid === 1 || String(o.status).toLowerCase() === 'completed' || String(o.status).toLowerCase() === 'settled',
+          dept: dept === 'bar' ? 'Bar Lounge' : 'Restaurant'
+        };
+      });
+      if (filter === 'settled') {
+        return parsed.filter((o: any) => o.is_settled);
+      }
+      return parsed;
+    } catch (_) {}
+    try {
+      const state = await (realApi as any).fbState(dept);
+      const orders = dept === 'bar' ? (state.barOrders || []) : (state.restaurantOrders || []);
+      if (filter === 'settled') {
+        return orders.filter((o: any) => o.is_settled || o.is_paid === 1 || String(o.status).toLowerCase() === 'completed' || String(o.status).toLowerCase() === 'settled');
+      }
+      return orders;
+    } catch (_) {}
     return [];
   },
   storeVendors: async () => {

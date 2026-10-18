@@ -189,14 +189,16 @@ export default function RoomDetails() {
       const targetBookingId = params.bookingId || found?.booking_id || found?.id || id;
       const full = await api.booking(targetBookingId);
       if (full) {
-        const roomCharge = Number(full.total_room_charge || full.room_charge || full.daily_rate || found?.roomCharge || params.total || 0);
+        const rType = String(full.room_type || found?.roomType || '').toLowerCase();
+        const fallbackRate = rType.includes('pent') ? 4500 : (rType.includes('suit') ? 3500 : (rType.includes('deluxe') ? 2200 : 2400));
+        const roomCharge = Number(full.total_room_charge || full.room_charge || full.daily_rate || found?.roomCharge || params.total || fallbackRate);
         const fnb = Number(full.food_total || found?.restaurant || 0);
         const bar = Number(full.bar_total || found?.bar || 0);
         const extra = Number(full.extra || full.extra_bed_charge || found?.extra || 0);
         const discount = Number(full.discount_amount || found?.discount || 0);
         const tax = Number(full.tax_amount || Math.round(roomCharge * 0.05));
-        const total = Number(full.grand_total || (roomCharge + fnb + bar + extra - discount + tax) || found?.total || params.total || 0);
-        const paid = Number(full.total_paid || full.advance_payment || full.advance_amount || found?.paid || params.paid || 0);
+        const total = Number(full.grand_total || full.total || found?.total || (roomCharge + fnb + bar + extra - discount + tax));
+        const paid = Number(full.total_paid || full.paid || full.advance_payment || full.advance_amount || found?.paid || params.paid || total);
         const pending = Math.max(0, total - paid);
 
         found = {
@@ -459,7 +461,7 @@ export default function RoomDetails() {
             <View style={styles.heroDivider} />
             <View style={styles.heroStatsRow}>
               <View style={styles.heroStatItem}>
-                <Text style={styles.heroStatLabel}>Total Folio</Text>
+                <Text style={styles.heroStatLabel}>Total Bill</Text>
                 <Text style={styles.heroStatVal}>{money(s.total)}</Text>
               </View>
               <View style={styles.heroStatItem}>
@@ -632,7 +634,7 @@ export default function RoomDetails() {
 
             <View style={styles.rowDivider} />
 
-            <DetailRow label="Grand Total Folio" value={money(s.total)} bold />
+            <DetailRow label="Total Bill" value={money(s.total)} bold />
             <DetailRow label="Total Paid" value={money(s.paid)} color={c.ok} bold />
             <DetailRow
               label="Pending Balance Due"

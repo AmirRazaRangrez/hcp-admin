@@ -68,7 +68,7 @@ function handleNotificationNavigation(router: any, response: any) {
     } else if (notifType.includes('store') || notifType.includes('vendor')) {
       router.push('/(tabs)/store');
     } else if (notifType.includes('restaurant') || notifType.includes('bar')) {
-      router.push('/(tabs)/activity');
+      router.push('/fb');
     } else {
       // Default to Home if notification type is unknown or general
       router.push('/(tabs)');

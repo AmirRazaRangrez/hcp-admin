@@ -157,8 +157,8 @@ export function Screen({ title, subtitle, logo, busy, reload, err, at, back, rig
         }}
         contentContainerStyle={{
           paddingHorizontal: logo ? 10 : 16,
-          paddingTop: logo ? (Platform.OS === 'android' ? 12 : 8) : back ? 14 : (Platform.OS === 'android' ? 36 : (Platform.OS === 'ios' ? 44 : 16)),
-          gap: logo ? 6 : 12,
+          paddingTop: logo ? (Platform.OS === 'android' ? 6 : 4) : back ? 14 : (Platform.OS === 'android' ? 36 : (Platform.OS === 'ios' ? 44 : 16)),
+          gap: logo ? 4 : 12,
           paddingBottom: isScroll ? 100 : 8,
           flexGrow: isScroll ? 1 : 0,
           ...(Platform.OS === 'web' && !isScroll ? {
@@ -271,8 +271,8 @@ export const s = StyleSheet.create({
     marginBottom: 0
   },
   scrollLogoImg: {
-    width: 180,
-    height: 54
+    width: 120,
+    height: 34
   },
   headContent: {
     justifyContent: 'center'

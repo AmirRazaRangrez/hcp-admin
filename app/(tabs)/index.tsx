@@ -157,52 +157,36 @@ export default function Home() {
 
   return (
     <Screen logo={require('../../assets/hcp-logo-with-name-transparent.png')} scrollable={true} busy={busy} reload={reload} at={at} err={err}>
-      {/* Store Bills Aging Alert Strips: Below Logo */}
-      <View style={styles.storeStripsContainer}>
-        {/* Red Strip: 25-40+ Days */}
-        <Pressable
-          onPress={() => nav.push({ pathname: '/(tabs)/store', params: { filterStatus: 'red' } })}
-          style={({ pressed }) => [
-            styles.storeStripCard,
-            styles.storeStripRed,
-            pressed && { opacity: 0.88, transform: [{ scale: 0.99 }] }
-          ]}
-        >
-          <View style={styles.storeStripLeft}>
-            <View style={[styles.storeStripDot, { backgroundColor: '#dc2626' }]} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.storeStripTitleRed}>
-                🔴 {redBillsCount} Overdue Bill{redBillsCount === 1 ? '' : 's'} (25-40+ Days)
-              </Text>
-              <Text style={styles.storeStripSubRed}>
-                {redBillsDue > 0 ? `Pending Due: ${money(redBillsDue)}` : 'No bills in critical overdue'}
-              </Text>
-            </View>
-          </View>
-          <Text style={styles.storeStripArrowRed}>View ➔</Text>
-        </Pressable>
-
+      {/* Compact Store Bills Aging Dual Strip: Key:Value within height of one strip */}
+      <View style={styles.storeCompactDualStrip}>
         {/* Yellow Strip: 15-25 Days */}
         <Pressable
           onPress={() => nav.push({ pathname: '/(tabs)/store', params: { filterStatus: 'yellow' } })}
           style={({ pressed }) => [
-            styles.storeStripCard,
-            styles.storeStripYellow,
-            pressed && { opacity: 0.88, transform: [{ scale: 0.99 }] }
+            styles.storeChip,
+            styles.storeChipYellow,
+            pressed && { opacity: 0.82, transform: [{ scale: 0.98 }] }
           ]}
         >
-          <View style={styles.storeStripLeft}>
-            <View style={[styles.storeStripDot, { backgroundColor: '#d97706' }]} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.storeStripTitleYellow}>
-                🟡 {yellowBillsCount} Pending Bill{yellowBillsCount === 1 ? '' : 's'} (15-25 Days)
-              </Text>
-              <Text style={styles.storeStripSubYellow}>
-                {yellowBillsDue > 0 ? `Pending Due: ${money(yellowBillsDue)}` : 'No bills in warning range'}
-              </Text>
-            </View>
-          </View>
-          <Text style={styles.storeStripArrowYellow}>View ➔</Text>
+          <View style={[styles.storeChipDot, { backgroundColor: '#D97706' }]} />
+          <Text style={styles.storeChipTextYellow} numberOfLines={1}>
+            15-25 days : <Text style={styles.storeChipValueYellow}>{yellowBillsCount} bills</Text>
+          </Text>
+        </Pressable>
+
+        {/* Red Strip: 25-40 Days */}
+        <Pressable
+          onPress={() => nav.push({ pathname: '/(tabs)/store', params: { filterStatus: 'red' } })}
+          style={({ pressed }) => [
+            styles.storeChip,
+            styles.storeChipRed,
+            pressed && { opacity: 0.82, transform: [{ scale: 0.98 }] }
+          ]}
+        >
+          <View style={[styles.storeChipDot, { backgroundColor: '#DC2626' }]} />
+          <Text style={styles.storeChipTextRed} numberOfLines={1}>
+            25-40 days : <Text style={styles.storeChipValueRed}>{redBillsCount} bills</Text>
+          </Text>
         </Pressable>
       </View>
 
@@ -221,10 +205,29 @@ export default function Home() {
         </View>
         <Text style={styles.heroAmount}>{v ? money(hospRevenue) : '—'}</Text>
         <View style={styles.heroBottomRow}>
-          <Text style={styles.heroSub}>Room Hospitality &amp; Front Desk Settlements</Text>
+          <Text style={styles.heroSub}>Room Hospitality &amp; Front Desk</Text>
           {todayExpenses > 0 ? (
             <Text style={styles.heroNetText}>Net: {money(netInflow)}</Text>
           ) : null}
+        </View>
+      </Pressable>
+
+      {/* F&B Live Tables & Orders Quick Bar (Restaurant & Bar) */}
+      <Pressable
+        onPress={() => nav.push('/fb')}
+        style={({ pressed }) => [styles.fbQuickBar, pressed && { opacity: 0.88, transform: [{ scale: 0.99 }] }]}
+      >
+        <View style={styles.fbQuickLeft}>
+          <View style={styles.fbIconCircle}>
+            <RestaurantIcon size={13} color="#FFFFFF" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.fbQuickTitle} numberOfLines={1}>🍽️ F&amp;B Operations (Restaurant &amp; Bar)</Text>
+            <Text style={styles.fbQuickSub} numberOfLines={1}>Live Tables · Running KOTs · Settled Bills</Text>
+          </View>
+        </View>
+        <View style={styles.fbQuickBadge}>
+          <Text style={styles.fbQuickBadgeText}>Live ➔</Text>
         </View>
       </Pressable>
 
@@ -235,15 +238,15 @@ export default function Home() {
           m
           l="Room Hospitality"
           v={v?.hospitality}
-          icon={<HotelIcon size={14} color="#2563EB" />}
+          icon={<HotelIcon size={13} color="#2563EB" />}
           go={() => nav.push({ pathname: '/(tabs)/analytics', params: { dept: 'hospitality' } })}
         />
         <Tile
           m
           l="Restaurant F&B"
           v={v?.restaurant}
-          icon={<RestaurantIcon size={14} color="#E11D48" />}
-          go={() => nav.push({ pathname: '/(tabs)/analytics', params: { dept: 'restaurant' } })}
+          icon={<RestaurantIcon size={13} color="#E11D48" />}
+          go={() => nav.push({ pathname: '/fb', params: { dept: 'restaurant' } })}
         />
 
         {/* Row 2: Bar Lounge & Pending Cheques */}
@@ -251,9 +254,10 @@ export default function Home() {
           m
           l="Bar Lounge"
           v={v?.bar}
-          icon={<BarIcon size={14} color="#7C3AED" />}
-          go={() => nav.push({ pathname: '/(tabs)/analytics', params: { dept: 'bar' } })}
+          icon={<BarIcon size={13} color="#7C3AED" />}
+          go={() => nav.push({ pathname: '/fb', params: { dept: 'bar' } })}
         />
+
         <Tile m l="Pending Cheques" v={a?.pendingChequesAmount} icon={<ChequeIcon size={14} color="#0284C7" />} />
 
         {/* Row 3: Corporate BTC (Right after Pending Cheques) & Hotel Expenses */}
@@ -297,14 +301,14 @@ export default function Home() {
 const styles = StyleSheet.create({
   heroRevenue: {
     backgroundColor: '#0F2A2E',
-    borderRadius: 18,
-    paddingVertical: 16,
-    paddingHorizontal: 18,
+    borderRadius: 12,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
     shadowColor: '#0F2A2E',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.18,
-    shadowRadius: 10,
-    elevation: 4
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.14,
+    shadowRadius: 5,
+    elevation: 2.5
   },
   heroTop: {
     flexDirection: 'row',
@@ -313,70 +317,118 @@ const styles = StyleSheet.create({
   },
   heroLabel: {
     color: '#95ABA6',
-    fontSize: 12.5,
+    fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.6
+    letterSpacing: 0.4
   },
   expenseTag: {
     backgroundColor: '#FEE2E2',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 4
   },
   expenseTagText: {
     color: '#DC2626',
-    fontSize: 11,
+    fontSize: 9.5,
     fontWeight: '800'
   },
   heroAmount: {
     color: '#FFFFFF',
-    fontSize: 34,
+    fontSize: 22,
     fontWeight: '900',
-    letterSpacing: -0.5,
-    marginVertical: 4
+    letterSpacing: -0.4,
+    marginVertical: 1
   },
   heroBottomRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 2
+    marginTop: 0.5
   },
   heroSub: {
     color: '#95ABA6',
-    fontSize: 12.5,
+    fontSize: 10,
     fontWeight: '500',
     flex: 1
   },
   heroNetText: {
     color: '#6EE7B7',
-    fontSize: 12.5,
+    fontSize: 10.5,
+    fontWeight: '800'
+  },
+  fbQuickBar: {
+    backgroundColor: '#0D2429',
+    borderRadius: 10,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderWidth: 1.2,
+    borderColor: '#1D3B40',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginVertical: 2
+  },
+  fbQuickLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    flex: 1
+  },
+  fbIconCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#E11D48',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  fbQuickTitle: {
+    color: '#F8FAFC',
+    fontSize: 11,
+    fontWeight: '800'
+  },
+  fbQuickSub: {
+    color: '#94A3B8',
+    fontSize: 9.5,
+    fontWeight: '500',
+    marginTop: 0.5
+  },
+  fbQuickBadge: {
+    backgroundColor: '#E2B25E',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4
+  },
+  fbQuickBadgeText: {
+    color: '#0A191C',
+    fontSize: 9.5,
     fontWeight: '800'
   },
   metricsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
-    marginTop: 8,
-    paddingBottom: 16
+    gap: 5,
+    marginTop: 2,
+    paddingBottom: 4
   },
   tileWrap: {
-    flexBasis: '47%',
+    flexBasis: '48%',
     flexGrow: 1
   },
   tileCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    paddingVertical: 14,
-    paddingHorizontal: 15,
+    borderRadius: 10,
+    paddingVertical: 4.5,
+    paddingHorizontal: 8,
     borderWidth: 1,
     borderColor: '#E8EDEA',
-    minHeight: 84,
+    minHeight: 46,
     justifyContent: 'space-between',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 2
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.02,
+    shadowRadius: 2.5,
+    elevation: 1
   },
   tileHighlight: {
     borderColor: '#C79A4B',
@@ -389,16 +441,16 @@ const styles = StyleSheet.create({
   },
   tileLabel: {
     color: '#374151',
-    fontSize: 13.5,
-    lineHeight: 18,
+    fontSize: 10.5,
+    lineHeight: 13.5,
     fontWeight: '700',
     flex: 1,
-    marginRight: 6
+    marginRight: 4
   },
   tileIconBox: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
+    width: 20,
+    height: 20,
+    borderRadius: 5,
     backgroundColor: '#F3F6F4',
     alignItems: 'center',
     justifyContent: 'center'
@@ -407,81 +459,62 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
-    marginTop: 6
+    marginTop: 1.5
   },
   tileValue: {
     color: c.ink,
-    fontSize: 22,
+    fontSize: 15.5,
     fontWeight: '800'
   },
   tileValueHighlight: {
     color: '#92400E'
   },
-  storeStripsContainer: {
-    gap: 8,
-    marginBottom: 12,
-    marginTop: 4,
-  },
-  storeStripCard: {
+  storeCompactDualStrip: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1.5,
+    gap: 6,
+    marginTop: 1,
+    marginBottom: 2
   },
-  storeStripRed: {
-    backgroundColor: '#FEF2F2',
-    borderColor: '#FCA5A5',
-  },
-  storeStripYellow: {
-    backgroundColor: '#FFFBEB',
-    borderColor: '#FCD34D',
-  },
-  storeStripLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+  storeChip: {
     flex: 1,
+    height: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    borderRadius: 8,
+    borderWidth: 1.2
   },
-  storeStripDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+  storeChipRed: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FCA5A5'
   },
-  storeStripTitleRed: {
-    fontSize: 13.5,
-    fontWeight: '800',
-    color: '#991B1B',
+  storeChipYellow: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FCD34D'
   },
-  storeStripSubRed: {
-    fontSize: 11.5,
-    color: '#B91C1C',
-    fontWeight: '600',
-    marginTop: 1,
+  storeChipDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 4.5
   },
-  storeStripArrowRed: {
-    fontSize: 12.5,
-    fontWeight: '800',
-    color: '#DC2626',
-    marginLeft: 8,
+  storeChipTextRed: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#991B1B'
   },
-  storeStripTitleYellow: {
-    fontSize: 13.5,
-    fontWeight: '800',
-    color: '#92400E',
+  storeChipValueRed: {
+    fontWeight: '900',
+    color: '#DC2626'
   },
-  storeStripSubYellow: {
-    fontSize: 11.5,
-    color: '#B45309',
-    fontWeight: '600',
-    marginTop: 1,
+  storeChipTextYellow: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#92400E'
   },
-  storeStripArrowYellow: {
-    fontSize: 12.5,
-    fontWeight: '800',
-    color: '#D97706',
-    marginLeft: 8,
-  },
+  storeChipValueYellow: {
+    fontWeight: '900',
+    color: '#B45309'
+  }
 });
