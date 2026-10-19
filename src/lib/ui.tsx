@@ -159,7 +159,7 @@ export function Screen({ title, subtitle, logo, busy, reload, err, at, back, rig
           paddingHorizontal: logo ? 10 : 16,
           paddingTop: logo ? (Platform.OS === 'android' ? 6 : 4) : back ? 14 : (Platform.OS === 'android' ? 36 : (Platform.OS === 'ios' ? 44 : 16)),
           gap: logo ? 4 : 12,
-          paddingBottom: isScroll ? 100 : 8,
+          paddingBottom: isScroll ? 140 : 8,
           flexGrow: isScroll ? 1 : 0,
           ...(Platform.OS === 'web' && !isScroll ? {
             overflow: 'hidden' as any,
@@ -290,11 +290,11 @@ export const s = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 12,
-    backgroundColor: '#0F2A2E',
+    backgroundColor: c.ink,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#1D3B40',
+    borderColor: c.line,
     shadowColor: '#0F2A2E',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
@@ -302,7 +302,7 @@ export const s = StyleSheet.create({
     elevation: 3
   },
   title: {
-    color: '#0F2A2E',
+    color: c.ink,
     fontSize: 20,
     fontWeight: '800',
     letterSpacing: -0.3

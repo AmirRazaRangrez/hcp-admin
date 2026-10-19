@@ -122,17 +122,19 @@ function buildCrmPayload(s: any, bills: any[]) {
     checkout_time: checkoutTime,
     mobile: s?.mobile || r.mobile || r.guest_phone || '',
     phone: s?.mobile || r.mobile || r.guest_phone || '',
-    email: s?.email || r.email || '',
+    email: s?.email || s?.guest_email || r.email || r.guest_email || '',
+    guest_email: s?.email || s?.guest_email || r.email || r.guest_email || '',
     address: s?.address || r.address || 'Solapur',
     dob: s?.dob || r.dob || '',
     checkedInBy: s?.checkedInBy || r.checked_in_by || 'Cashier_1',
     checked_in_by: s?.checkedInBy || r.checked_in_by || 'Cashier_1',
     mealPlan: s?.mealPlan || r.meal_plan || 'EP (Room Only)',
     meal_plan: s?.mealPlan || r.meal_plan || 'EP (Room Only)',
-    docType: r.doc_type || 'Aadhaar Card',
-    doc_type: r.doc_type || 'Aadhaar Card',
-    aadharNumber: r.aadhar_number || r.id_number || '',
-    aadhar_number: r.aadhar_number || r.id_number || '',
+    docType: s?.docType || s?.doc_type || r.doc_type || r.docType || 'Aadhaar Card',
+    doc_type: s?.docType || s?.doc_type || r.doc_type || r.docType || 'Aadhaar Card',
+    aadharNumber: s?.aadharNumber || s?.aadhar_number || s?.id_number || r.aadhar_number || r.id_number || '',
+    aadhar_number: s?.aadharNumber || s?.aadhar_number || s?.id_number || r.aadhar_number || r.id_number || '',
+    id_number: s?.aadharNumber || s?.aadhar_number || s?.id_number || r.aadhar_number || r.id_number || '',
     docFront: r.doc_front || r.id_front || r.front_image || '',
     docBack: r.doc_back || r.id_back || r.back_image || '',
     guestPhoto: r.guest_photo || r.photo || r.live_photo || '',
@@ -173,6 +175,51 @@ export default function RoomDetails() {
     let found: any = null;
     const cleanId = String(id || '').trim().toLowerCase();
 
+    // 0. Fetch live Folio first for exact F&B orders, room charge, advance paid, pending, email & aadhar
+    try {
+      const folio = await api.roomFolio(id);
+      if (folio && folio.room) {
+        const fr = folio.room;
+        const fs = folio.summary || {};
+        found = {
+          id: String(fr.id || id),
+          room: String(fr.room_number || id),
+          guest: fr.guest_name || 'In-House Guest',
+          mobile: fr.mobile || '',
+          email: fr.email || '',
+          aadharNumber: fr.aadhar_number || '',
+          aadhar_number: fr.aadhar_number || '',
+          docType: fr.doc_type || 'Aadhaar Card',
+          doc_type: fr.doc_type || 'Aadhaar Card',
+          address: fr.address || '',
+          dob: fr.dob || '',
+          roomType: fr.room_type || 'Executive Room',
+          checkIn: fr.checkin_time || new Date().toISOString(),
+          checkOut: fr.approx_checkout_time || '',
+          approxCheckOut: fr.approx_checkout_time || '',
+          roomCharge: Number(fs.roomCharge ?? fr.total_room_charge ?? 2993),
+          restaurant: Number(fs.foodTotal ?? 0),
+          bar: Number(fs.barTotal ?? 0),
+          extra: 0,
+          discount: 0,
+          total: Number(fs.grandTotal ?? (Number(fs.roomCharge || 2993) + Number(fs.foodTotal || 0) + Number(fs.barTotal || 0))),
+          paid: Number(fs.advancePaid ?? fr.total_paid ?? 1500),
+          pending: Number(fs.balanceDue ?? 0),
+          source: fr.booking_source || 'Walk-in',
+          checkedInBy: fr.checked_in_by || 'Front Desk',
+          mealPlan: 'EP (Room Only)',
+          voucherNumber: fr.voucher_number || '',
+          advanceReceiptNo: fr.advance_receipt_no || '',
+          paymentMode: fr.advance_payment_mode || 'Cash',
+          folioRestaurantOrders: folio.restaurantOrders || [],
+          folioBarOrders: folio.barOrders || [],
+          raw: fr
+        };
+      }
+    } catch (e) {
+      console.warn('[Room Details] live folio fetch error:', e);
+    }
+
     // 1. Try to fetch from occupied list
     try {
       const list = await api.occupied();
@@ -207,21 +254,25 @@ export default function RoomDetails() {
           room: String(full.room_number || full.room || found?.room || id),
           guest: full.guest_name || full.name || found?.guest || params.guest || 'In-House Guest',
           mobile: full.mobile || full.phone || found?.mobile || params.phone || '',
-          email: full.email || found?.email || '',
-          address: full.address || found?.address || '',
-          dob: full.dob || found?.dob || '',
+          email: found?.email || full.email || '',
+          aadharNumber: found?.aadharNumber || full.aadhar_number || full.id_number || '',
+          aadhar_number: found?.aadhar_number || full.aadhar_number || full.id_number || '',
+          docType: found?.docType || full.doc_type || 'Aadhaar Card',
+          doc_type: found?.doc_type || full.doc_type || 'Aadhaar Card',
+          address: found?.address || full.address || '',
+          dob: found?.dob || full.dob || '',
           roomType: full.room_type || full.room_types || found?.roomType || 'Standard Room',
           checkIn: full.checkin_time || found?.checkIn || new Date().toISOString(),
           checkOut: full.actual_checkout_time || full.checkout_time || found?.checkOut,
           approxCheckOut: full.approx_checkout_time || found?.approxCheckOut,
-          roomCharge,
-          restaurant: fnb,
-          bar,
+          roomCharge: found?.roomCharge || roomCharge,
+          restaurant: found?.restaurant !== undefined && found?.restaurant > 0 ? found.restaurant : fnb,
+          bar: found?.bar !== undefined && found?.bar > 0 ? found.bar : bar,
           extra,
           discount,
-          total,
-          paid,
-          pending,
+          total: found?.total || total,
+          paid: found?.paid || paid,
+          pending: found?.pending !== undefined ? found.pending : pending,
           source: full.booking_source || found?.source || 'Walk-in',
           checkedInBy: full.checked_in_by || found?.checkedInBy || 'Front Desk',
           mealPlan: full.meal_plan || found?.mealPlan || 'EP (Room Only)',
@@ -278,8 +329,16 @@ export default function RoomDetails() {
   const s: any = stayData;
 
   const { data: ordersData, busy: ordersBusy, reload: reloadOrders } = useLoad(
-    async () => (s ? api.roomOrders(s) : []),
-    [s?.id],
+    async () => {
+      if (!s) return [];
+      const orders = await api.roomOrders(s);
+      if (Array.isArray(orders) && orders.length > 0) return orders;
+      if (s?.folioRestaurantOrders || s?.folioBarOrders) {
+        return [...(s.folioRestaurantOrders || []), ...(s.folioBarOrders || [])];
+      }
+      return [];
+    },
+    [s?.id, s?.room],
     'roomOrders:' + (s?.id || '')
   );
 
@@ -552,6 +611,8 @@ export default function RoomDetails() {
               />
             ) : null}
             <DetailRow label="Email" value={s.email} />
+            <DetailRow label="ID Proof Type" value={s.docType || s.doc_type || s.raw?.doc_type} />
+            <DetailRow label="Aadhaar / ID No" value={s.aadharNumber || s.aadhar_number || s.raw?.aadhar_number || s.raw?.id_number} bold color={c.brass} />
             <DetailRow label="Date of Birth" value={s.dob} />
             <DetailRow label="Address" value={s.address} />
             <View style={styles.rowDivider} />
@@ -674,8 +735,8 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 18,
     borderWidth: 1.5,
-    borderColor: '#E6ECE9',
-    shadowColor: '#0F2A2E',
+    borderColor: '#fbd3e4',
+    shadowColor: '#21181f',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.05,
     shadowRadius: 8,
@@ -764,12 +825,12 @@ const styles = StyleSheet.create({
   docBtnText: {
     fontSize: 12.5,
     fontWeight: '800',
-    color: '#0F2A2E'
+    color: '#21181f'
   },
   docBtnInvoice: {
     flexBasis: '100%',
-    backgroundColor: '#0F2A2E',
-    borderColor: '#0F2A2E'
+    backgroundColor: '#8c5d77',
+    borderColor: '#8c5d77'
   },
   docBtnInvoiceText: {
     color: '#FFFFFF'

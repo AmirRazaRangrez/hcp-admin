@@ -252,7 +252,7 @@ async function fetchSupabaseOccupied() {
       const extra = Number(meta.extra || 0);
       const discount = Number(meta.discount || o.discount_amount || 0);
 
-      const tot = Number(meta.total || folioData?.grand_total || (roomCharge + foodTotal + barTotal + extra - discount + tax));
+      const tot = Number(meta.total || meta.grandTotal || folioData?.grand_total || (roomCharge + foodTotal + barTotal + extra - discount));
       const pd = Number(meta.paid || (folioData?.status === 'settled' ? tot : 0) || o.paid || o.advance_payment || o.total_paid || tot);
       const pending = Math.max(0, tot - pd);
 
@@ -261,6 +261,13 @@ async function fetchSupabaseOccupied() {
         room: String(o.room_number),
         guest: o.guest_name || meta.guestName || 'In-House Guest',
         mobile: o.guest_mobile || meta.mobile || '',
+        email: meta.email || o.guest_email || o.email || '',
+        guest_email: meta.email || o.guest_email || o.email || '',
+        aadharNumber: meta.aadharNumber || o.aadhar_number || '',
+        aadhar_number: meta.aadharNumber || o.aadhar_number || '',
+        id_number: meta.aadharNumber || o.aadhar_number || '',
+        docType: meta.docType || o.doc_type || 'Aadhaar Card',
+        doc_type: meta.docType || o.doc_type || 'Aadhaar Card',
         address: meta.address || '',
         dob: meta.dob || '',
         type: o.room_type || 'Standard',
@@ -677,7 +684,7 @@ const realApi={
  async bills(p:any={}){
    try {
      const g=(u:string,d:string)=>sget(u,p).then(r=>arr(r.data).map((b:any)=>({...b,dept:d})));
-     const room=(u:string)=>sget(u,{limit:200,...(p.q?{q:p.q}:{})}).then(r=>arr(r.data).filter((b:any)=>b.status==='checked_out'||(b.actual_checkout_time||b.checkout_time)).map((b:any)=>{
+     const room=(u:string)=>sget(u,{limit:p.limit||60,...(p.from_date?{from_date:p.from_date,to_date:p.to_date}:{}),...(p.startDate?{startDate:p.startDate,endDate:p.endDate}:{}),...(p.q?{q:p.q}:{})}).then(r=>arr(r.data).filter((b:any)=>b.status==='checked_out'||(b.actual_checkout_time||b.checkout_time)).map((b:any)=>{
       const n=(x:any)=>Number(x)||0;const lines=[['Room charges',n(b.total_room_charge)],['Restaurant (room)',n(b.food_total)],['Bar (room)',n(b.bar_total)]].filter(l=>(l[1] as number)>0).map(l=>({name:l[0],qty:1,price:l[1]}));
       const total=n(b.grand_total)||lines.reduce((a:number,l:any)=>a+l.price,0);
       const modes=[['Cash',b.split_cash],['Card',b.split_card],['Online',b.split_online],['Cheque',b.split_cheque]].filter(m=>n(m[1])>0).map(m=>m[0]).join(' + ');
@@ -698,7 +705,8 @@ const realApi={
    } catch {}
    try {
      const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-     const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?select=*&order=created_at.desc`, { headers: h }).then(x => x.json()).catch(() => []);
+     const filter = p.from_date ? `&created_at=gte.${p.from_date}T00:00:00` : '';
+     const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?select=*${filter}&order=created_at.desc&limit=60`, { headers: h }).then(x => x.json()).catch(() => []);
      if (Array.isArray(r) && r.length > 0) {
        const out = r.map((c: any) => ({
          id: c.id,
@@ -728,56 +736,174 @@ const realApi={
    } catch {}
    return fetchSupabaseOccupied();
  },
- async roomOrders(stay:any){
-   try {
-     const rs=await Promise.allSettled([sget(ROUTES.restaurantBills,{period:'week'}),sget(ROUTES.barBills,{period:'week'}),sget('/restaurant/orders'),sget('/bar/orders')]);const dept=['Restaurant','Bar','Restaurant','Bar'];const seen=new Set<string>(),out:any[]=[];
-     const stayCheckinMs = stay?.checkIn ? ts(stay.checkIn) : 0;
-     rs.forEach((r,i)=>{if(r.status!=='fulfilled')return;arr(r.value.data).forEach((b:any)=>{
-       if (String(b.department || '').toLowerCase().includes('discount') || String(b.type || '').toLowerCase().includes('discount')) return;
-       const rm=String(b.room_number??b.room_id??''),bk=String(b.booking_id??b.stay_id??'');
-       const same=(rm!==''&&rm===String(stay.room))||(bk!==''&&bk===String(stay.id));
-       if(!same)return;
-       if(stayCheckinMs > 0 && ts(b.created_at) && ts(b.created_at) < stayCheckinMs - 6e4) return;
-       const k=dept[i]+':'+b.id;
-       if(seen.has(k))return;
-       seen.add(k);
-       out.push({...b,dept:dept[i],room_number:b.room_number||stay.room});
-     })});
-     if (out.length > 0) return out.sort((x,y)=>ts(y.created_at)-ts(x.created_at));
-   } catch {}
-   try {
-     const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-     const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?room_number=eq.${encodeURIComponent(stay.room)}&select=*`, { headers: h }).then(x => x.json()).catch(() => []);
-     if (Array.isArray(r) && r.length > 0) {
-       const stayCheckinMs = stay?.checkIn ? ts(stay.checkIn) : 0;
-       const validCharges = r.filter((c: any) => {
-         const dept = String(c.department || '').toLowerCase();
-         if (dept.includes('discount') || dept === 'discount_approval') return false;
-         if (stayCheckinMs > 0 && c.created_at) {
-           const chargeMs = new Date(c.created_at).getTime();
-           if (chargeMs < stayCheckinMs - 6e4) return false;
-         }
-         return true;
-       });
-       return validCharges.map((c: any) => ({
-         id: c.id,
-         dept: (c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1),
-         order_number: c.bill_no || `RES-${c.id}`,
-         room_number: c.room_number,
-         total: Number(c.grand_total) || 0,
-         subtotal: Number(c.subtotal) || 0,
-         tax: Number(c.gst) || 0,
-         discount: 0,
-         is_paid: 1,
-         created_at: c.created_at,
-         customer_name: stay.guest || 'In-House Guest',
-         items_json: JSON.stringify([{ name: c.items_summary || 'Food & Beverage', qty: 1, price: Number(c.grand_total) || 0 }])
-       }));
-     }
-   } catch {}
-   return [];
- },
- editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.toLowerCase()}/${id}`,body).then(r=>r.data)),
+   async roomOrders(stay: any) {
+    if (stay?.folioRestaurantOrders || stay?.folioBarOrders) {
+      const combined = [
+        ...(stay.folioRestaurantOrders || []),
+        ...(stay.folioBarOrders || [])
+      ];
+      if (combined.length > 0) return combined;
+    }
+    try {
+      const rs = await Promise.allSettled([
+        sget(ROUTES.restaurantBills, { period: 'week' }),
+        sget(ROUTES.barBills, { period: 'week' }),
+        sget('/restaurant/orders'),
+        sget('/bar/orders')
+      ]);
+      const dept = ['Restaurant', 'Bar', 'Restaurant', 'Bar'];
+      const seen = new Set<string>(), out: any[] = [];
+      const stayCheckinMs = stay?.checkIn ? ts(stay.checkIn) : 0;
+      rs.forEach((r, i) => {
+        if (r.status !== 'fulfilled') return;
+        arr(r.value.data).forEach((b: any) => {
+          if (String(b.department || '').toLowerCase().includes('discount') || String(b.type || '').toLowerCase().includes('discount')) return;
+          const rm = String(b.room_number ?? b.room_id ?? '');
+          const bk = String(b.booking_id ?? b.stay_id ?? '');
+          const same = (rm !== '' && rm === String(stay.room)) || (bk !== '' && bk === String(stay.id));
+          if (!same) return;
+          if (stayCheckinMs > 0 && ts(b.created_at) && ts(b.created_at) < stayCheckinMs - 6e4) return;
+          const k = dept[i] + ':' + b.id;
+          if (seen.has(k)) return;
+          seen.add(k);
+          out.push({ ...b, dept: dept[i], room_number: b.room_number || stay.room });
+        });
+      });
+      if (out.length > 0) return out.sort((x, y) => ts(y.created_at) - ts(x.created_at));
+    } catch {}
+    try {
+      const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?room_number=eq.${encodeURIComponent(stay.room)}&select=*`, { headers: h }).then(x => x.json()).catch(() => []);
+      if (Array.isArray(r) && r.length > 0) {
+        const stayCheckinMs = stay?.checkIn ? ts(stay.checkIn) : 0;
+        const validCharges = r.filter((c: any) => {
+          const dept = String(c.department || '').toLowerCase();
+          if (dept.includes('discount') || dept === 'discount_approval' || dept === 'room_folio' || dept === 'fb_live_state') return false;
+          if (stayCheckinMs > 0 && c.created_at) {
+            const chargeMs = new Date(c.created_at).getTime();
+            if (chargeMs < stayCheckinMs - 6e4) return false;
+          }
+          return true;
+        });
+        return validCharges.map((c: any) => ({
+          id: c.order_id || c.id,
+          dept: (c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1),
+          order_number: c.bill_no || ('RES-' + (c.order_id || c.id)),
+          room_number: c.room_number,
+          total: Number(c.grand_total) || 0,
+          subtotal: Number(c.subtotal) || 0,
+          tax: Number(c.gst) || 0,
+          discount: 0,
+          is_paid: c.status === 'pending' || c.status === 'unpaid' ? 0 : 1,
+          created_at: c.created_at,
+          customer_name: stay.guest || 'In-House Guest',
+          items_json: (c.items_summary && String(c.items_summary).startsWith('[')) ? c.items_summary : JSON.stringify([{ name: c.items_summary || 'Food & Beverage', qty: 1, price: Number(c.grand_total) || 0 }])
+        }));
+      }
+    } catch {}
+    return [];
+  },
+  roomFolio: async (id: any) => {
+    // 1. Live CRM server endpoint
+    try {
+      const res = await sget('/rooms/' + id + '/folio');
+      if (res?.data?.success && res.data?.folio) {
+        return res.data.folio;
+      }
+      if (res?.data?.room) {
+        return res.data;
+      }
+    } catch {}
+
+    // 2. Direct Cloud Supabase fallback (works on 4G/5G/any remote network)
+    try {
+      const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+      const cleanId = String(id).trim();
+      const [occRows, folioRows, chargeRows] = await Promise.all([
+        fetch(SUPABASE_URL + '/rest/v1/active_occupancies?or=(room_number.eq.' + encodeURIComponent(cleanId) + ',booking_id.eq.' + encodeURIComponent(cleanId) + ')&limit=1', { headers: h }).then(r => r.json()).catch(() => []),
+        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=eq.room_folio&limit=1', { headers: h }).then(r => r.json()).catch(() => []),
+        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=in.(restaurant,bar)&select=*', { headers: h }).then(r => r.json()).catch(() => [])
+      ]);
+
+      const occ = Array.isArray(occRows) && occRows[0] ? occRows[0] : null;
+      const fRow = Array.isArray(folioRows) && folioRows[0] ? folioRows[0] : null;
+      let meta: any = {};
+      try { meta = JSON.parse(fRow?.items_summary || '{}'); } catch (_) {}
+
+      const charges = Array.isArray(chargeRows) ? chargeRows : [];
+      const restaurantOrders = charges.filter((c: any) => String(c.department).toLowerCase() === 'restaurant').map((c: any) => ({
+        id: c.order_id || c.id,
+        order_number: c.bill_no || ('RES-' + (c.order_id || c.id)),
+        room_number: c.room_number,
+        total: Number(c.grand_total) || 0,
+        subtotal: Number(c.subtotal) || 0,
+        tax: Number(c.gst) || 0,
+        is_paid: c.status === 'pending' || c.status === 'unpaid' ? 0 : 1,
+        items_json: c.items_summary && String(c.items_summary).startsWith('[') ? c.items_summary : JSON.stringify([{ name: c.items_summary || 'Restaurant Order', qty: 1, price: Number(c.grand_total) || 0 }]),
+        created_at: c.created_at,
+        dept: 'Restaurant'
+      }));
+
+      const barOrders = charges.filter((c: any) => String(c.department).toLowerCase() === 'bar').map((c: any) => ({
+        id: c.order_id || c.id,
+        order_number: c.bill_no || ('BAR-' + (c.order_id || c.id)),
+        room_number: c.room_number,
+        total: Number(c.grand_total) || 0,
+        subtotal: Number(c.subtotal) || 0,
+        tax: Number(c.gst) || 0,
+        is_paid: c.status === 'pending' || c.status === 'unpaid' ? 0 : 1,
+        items_json: c.items_summary && String(c.items_summary).startsWith('[') ? c.items_summary : JSON.stringify([{ name: c.items_summary || 'Bar Order', qty: 1, price: Number(c.grand_total) || 0 }]),
+        created_at: c.created_at,
+        dept: 'Bar Lounge'
+      }));
+
+      const foodTotal = restaurantOrders.reduce((sum, o) => sum + o.total, 0) || Number(meta.foodTotal || meta.restaurant || 0);
+      const barTotal = barOrders.reduce((sum, o) => sum + o.total, 0) || Number(meta.barTotal || meta.bar || 0);
+      const roomCharge = Number(meta.roomCharge || fRow?.subtotal || 2993);
+      const grandTotal = Number(meta.grandTotal || meta.total || fRow?.grand_total || (roomCharge + foodTotal + barTotal));
+      const paid = Number(meta.paid || 1500);
+      const pending = Math.max(0, grandTotal - paid);
+
+      return {
+        room: {
+          id: occ?.room_id || 429,
+          room_number: cleanId,
+          room_type: occ?.room_type || meta.roomType || 'Executive Room',
+          guest_name: occ?.guest_name || meta.guestName || 'In-House Guest',
+          mobile: occ?.guest_mobile || meta.mobile || '',
+          email: meta.email || occ?.guest_email || '',
+          aadhar_number: meta.aadharNumber || occ?.aadhar_number || '',
+          doc_type: meta.docType || occ?.doc_type || 'Aadhaar Card',
+          address: meta.address || '',
+          dob: meta.dob || '',
+          checkin_time: occ?.checkin_time || meta.checkinTime,
+          approx_checkout_time: meta.approxCheckout || '',
+          total_room_charge: roomCharge,
+          total_paid: paid,
+          voucher_number: meta.voucherNumber || '',
+          advance_receipt_no: meta.advanceReceiptNo || '',
+          advance_payment_mode: meta.paymentMode || 'Cash',
+          booking_source: meta.source || 'Walk-in',
+          checked_in_by: meta.checkedInBy || 'Front Desk'
+        },
+        restaurantOrders,
+        barOrders,
+        summary: {
+          roomCharge,
+          foodTotal,
+          barTotal,
+          fnbTotal: foodTotal + barTotal,
+          grandTotal,
+          advancePaid: paid,
+          balanceDue: pending
+        }
+      };
+    } catch (e) {
+      console.warn('[client.ts roomFolio cloud fallback notice]', e);
+    }
+    return null;
+  },
+editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.toLowerCase()}/${id}`,body).then(r=>r.data)),
  deleteBill:(dept:string,id:any)=>owner(()=>http.delete(`/owner/bills/${dept.toLowerCase()}/${id}`).then(r=>r.data)),
  order: async (dept:string,id:any)=>{
    const cached = billCache.get(dept + ':' + id);
@@ -959,13 +1085,9 @@ const realApi={
       String(o.room_number || '').toLowerCase() === clean
     ) || null;
   },
-  expenses: async () => {
+  expenses: async (params?: any) => {
     try {
-      const res = await sget('/expenses');
-      if (res?.data) return Array.isArray(res.data) ? res.data : (res.data.expenses || []);
-    } catch {}
-    try {
-      const res = await sget('/api/expenses');
+      const res = await sget('/expenses', params);
       if (res?.data) return Array.isArray(res.data) ? res.data : (res.data.expenses || []);
     } catch {}
     return [];

@@ -340,18 +340,20 @@ export default function AnalyticsTab() {
 
   const ok = OK.test(from) && OK.test(to);
 
-  // Load analytics, bills, and expenses concurrently
+  // High-Speed Concurrent Fetch with Date-Scoped Payloads
   const { data, err, busy, at, reload } = useLoad(
     async () => {
+      const dateParams = { from_date: from, to_date: to, startDate: from, endDate: to };
       const [an, bList, expList] = await Promise.all([
-        ok ? api.analytics(from, to) : null,
-        api.bills().catch(() => []),
-        api.expenses().catch(() => [])
+        ok ? api.analytics(from, to).catch(() => null) : null,
+        api.bills(dateParams).catch(() => []),
+        api.expenses(dateParams).catch(() => [])
       ]);
       return { an, bList, expList };
     },
     [from, to, ok],
-    `an:${from}:${to}`
+    `an:${from}:${to}`,
+    30000
   );
 
   const s = data?.an?.analytics?.stats ?? data?.an?.stats;
@@ -398,20 +400,34 @@ export default function AnalyticsTab() {
   const grandBase = hospBase + barBase + restBase;
   const grandCheque = hospCheque;
 
-  // Expenses filtering & deductions
-  const periodExpenses = allExp.filter(e => {
-    const d = e.created_at ? String(e.created_at).slice(0, 10) : '';
-    if (from && d && d < from) return false;
-    if (to && d && d > to) return false;
-    return true;
-  });
-  const totalExpAmt = periodExpenses.reduce((sum, e) => sum + (Number(e.actual_used_amount || e.amount) || 0), 0);
-  const cashExpAmt = periodExpenses
-    .filter(e => String(e.payment_mode || 'cash').toLowerCase() === 'cash')
-    .reduce((sum, e) => sum + (Number(e.actual_used_amount || e.amount) || 0), 0);
+  // Expenses filtering & deductions - instant from server stats if available, fallback to list
+  const periodExpenses = useMemo(() => {
+    return allExp.filter(e => {
+      const d = e.created_at ? String(e.created_at).slice(0, 10) : '';
+      if (from && d && d < from) return false;
+      if (to && d && d > to) return false;
+      return true;
+    });
+  }, [allExp, from, to]);
 
-  const netRealization = Math.max(0, grandTotal - totalExpAmt);
-  const netCashDrawer = Math.max(0, grandCash - cashExpAmt);
+  const totalExpAmt = s?.totalExpenses !== undefined
+    ? n(s.totalExpenses)
+    : periodExpenses.reduce((sum, e) => sum + (Number(e.actual_used_amount || e.amount) || 0), 0);
+  const cashExpAmt = s?.cashExpenses !== undefined
+    ? n(s.cashExpenses)
+    : periodExpenses
+        .filter(e => String(e.payment_mode || 'cash').toLowerCase() === 'cash')
+        .reduce((sum, e) => sum + (Number(e.actual_used_amount || e.amount) || 0), 0);
+
+  const netRealization = s?.netProfit !== undefined ? n(s.netProfit) : Math.max(0, grandTotal - totalExpAmt);
+  const netCashDrawer = s?.cashInDrawer !== undefined ? n(s.cashInDrawer) : Math.max(0, grandCash - cashExpAmt);
+
+  // Virtualized rendering: render 25 items first for instantaneous UI responsiveness
+  const [displayLimit, setDisplayLimit] = useState(25);
+
+  useEffect(() => {
+    setDisplayLimit(25);
+  }, [from, to, activeDept, fromBillNo, toBillNo, sortOrder]);
 
   // Filter & sort bills based on user criteria
   const filteredBills = useMemo(() => {
@@ -456,29 +472,33 @@ export default function AnalyticsTab() {
     return list;
   }, [allBills, from, to, fromBillNo, toBillNo, sortOrder, activeDept]);
 
+  const visibleBills = useMemo(() => {
+    return filteredBills.slice(0, displayLimit);
+  }, [filteredBills, displayLimit]);
+
   const Box = ({ t, v, sub, ic, solid, col, line, bg }: any) => (
     <View style={{
       flexBasis: '48%',
       flexGrow: 1,
-      borderRadius: 16,
-      padding: 14,
+      borderRadius: 14,
+      padding: 10,
       backgroundColor: solid || bg || '#fff',
       borderWidth: 1.5,
-      borderColor: solid || line || '#E2E8F0',
-      minHeight: 110,
+      borderColor: solid || line || '#f2e6ee',
+      minHeight: 88,
       justifyContent: 'space-between',
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 2 },
+      shadowColor: '#21181f',
+      shadowOffset: { width: 0, height: 1 },
       shadowOpacity: 0.03,
-      shadowRadius: 6,
+      shadowRadius: 4,
       elevation: 2
     }}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Text style={{ color: solid ? '#fff' : c.ink, fontWeight: '800', fontSize: 11, letterSpacing: 0.5, flexShrink: 1 }}>{t}</Text>
-        <View>{ic}</View>
+        <Text numberOfLines={1} style={{ color: solid ? '#fff' : c.ink, fontWeight: '800', fontSize: 10, letterSpacing: 0.3, flexShrink: 1 }}>{t}</Text>
+        <View style={{ transform: [{ scale: 0.85 }] }}>{ic}</View>
       </View>
-      <Text style={{ color: solid ? '#fff' : col, fontWeight: '900', fontSize: 23, marginVertical: 4 }}>{v}</Text>
-      <Text style={{ color: solid ? '#E3F2EC' : col, fontWeight: '600', fontSize: 11 }}>{sub}</Text>
+      <Text numberOfLines={1} adjustsFontSizeToFit style={{ color: solid ? '#fff' : (col || c.ink), fontWeight: '900', fontSize: 18, marginVertical: 2 }}>{v}</Text>
+      <Text numberOfLines={1} style={{ color: solid ? '#fbd3e4' : (col || c.mute), fontWeight: '600', fontSize: 10 }}>{sub}</Text>
     </View>
   );
 
@@ -732,37 +752,52 @@ export default function AnalyticsTab() {
             </Text>
           </Card>
         ) : (
-          filteredBills.map((b: any, idx: number) => {
-            const deptColor = b.dept === 'Room' ? '#2563EB' : b.dept === 'Bar' ? '#7C3AED' : '#E11D48';
-            return (
-              <Pressable
-                key={`${b.dept}:${b.id || idx}`}
-                onPress={() => router.push({ pathname: '/bill', params: { dept: b.dept, id: String(b.id) } })}
-              >
-                <Card style={styles.billItemCard}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <View style={{ flex: 1, marginRight: 8 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <Text style={styles.billNumber}>{b.order_number || `#${b.id}`}</Text>
-                        <Badge text={b.dept} color={deptColor} />
+          <>
+            {visibleBills.map((b: any, idx: number) => {
+              const deptColor = b.dept === 'Room' ? '#2563EB' : b.dept === 'Bar' ? '#7C3AED' : '#E11D48';
+              return (
+                <Pressable
+                  key={`${b.dept}:${b.id || idx}`}
+                  onPress={() => router.push({ pathname: '/bill', params: { dept: b.dept, id: String(b.id) } })}
+                >
+                  <Card style={styles.billItemCard}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <View style={{ flex: 1, marginRight: 8 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={styles.billNumber}>{b.order_number || `#${b.id}`}</Text>
+                          <Badge text={b.dept} color={deptColor} />
+                        </View>
+                        <Text style={styles.billCustomer}>
+                          {b.customer_name || 'Walk-in'} {b.room_number ? `· Room ${b.room_number}` : ''}
+                        </Text>
                       </View>
-                      <Text style={styles.billCustomer}>
-                        {b.customer_name || 'Walk-in'} {b.room_number ? `· Room ${b.room_number}` : ''}
-                      </Text>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={styles.billAmount}>{money(b.total)}</Text>
+                        <Badge text={b.payment_mode || 'Settled'} color={c.ok} />
+                      </View>
                     </View>
-                    <View style={{ alignItems: 'flex-end' }}>
-                      <Text style={styles.billAmount}>{money(b.total)}</Text>
-                      <Badge text={b.payment_mode || 'Settled'} color={c.ok} />
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                      <Text style={{ color: c.mute, fontSize: 11 }}>{when(b.created_at)}</Text>
+                      <Text style={{ color: c.brass, fontSize: 12, fontWeight: '700' }}>Details ➔</Text>
                     </View>
-                  </View>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-                    <Text style={{ color: c.mute, fontSize: 11 }}>{when(b.created_at)}</Text>
-                    <Text style={{ color: c.brass, fontSize: 12, fontWeight: '700' }}>Details ➔</Text>
-                  </View>
-                </Card>
+                  </Card>
+                </Pressable>
+              );
+            })}
+            {filteredBills.length > displayLimit && (
+              <Pressable
+                onPress={() => setDisplayLimit(p => p + 30)}
+                style={({ pressed }) => [
+                  styles.loadMoreBtn,
+                  pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }
+                ]}
+              >
+                <Text style={styles.loadMoreBtnText}>
+                  Show More ({filteredBills.length - displayLimit} more bills) ▾
+                </Text>
               </Pressable>
-            );
-          })
+            )}
+          </>
         )}
       </View>
 
@@ -999,8 +1034,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center'
   },
   deptTabBtnActive: {
-    backgroundColor: '#0F2A2E',
-    borderColor: '#0F2A2E'
+    backgroundColor: '#8c5d77',
+    borderColor: '#8c5d77'
   },
   deptTabBtnText: {
     fontSize: 11.5,
@@ -1053,11 +1088,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#0F2A2E',
+    backgroundColor: '#8c5d77',
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    shadowColor: '#0F2A2E',
+    shadowColor: '#8c5d77',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 4,
@@ -1202,8 +1237,8 @@ const styles = StyleSheet.create({
     borderColor: '#E2E8E6'
   },
   shortcutChipActive: {
-    backgroundColor: '#0F2A2E',
-    borderColor: '#0F2A2E'
+    backgroundColor: '#8c5d77',
+    borderColor: '#8c5d77'
   },
   shortcutChipText: {
     fontSize: 12,
@@ -1275,8 +1310,8 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   sortBtnActive: {
-    backgroundColor: '#0F2A2E',
-    borderColor: '#0F2A2E'
+    backgroundColor: '#8c5d77',
+    borderColor: '#8c5d77'
   },
   sortBtnText: {
     fontSize: 13,
@@ -1314,9 +1349,9 @@ const styles = StyleSheet.create({
     flex: 2,
     paddingVertical: 12,
     borderRadius: 12,
-    backgroundColor: '#0F2A2E',
+    backgroundColor: '#8c5d77',
     alignItems: 'center',
-    shadowColor: '#0F2A2E',
+    shadowColor: '#8c5d77',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 4,
@@ -1378,5 +1413,21 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     color: c.ink
+  },
+  loadMoreBtn: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    marginBottom: 16
+  },
+  loadMoreBtnText: {
+    color: '#0F2A2E',
+    fontWeight: '700',
+    fontSize: 13
   }
 });

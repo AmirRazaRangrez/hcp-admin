@@ -145,7 +145,7 @@ function GlobalApprovalModal({ badges }: { badges: any }) {
             {pendingItem.expected_checkout ? (
               <View style={modalStyles.row}>
                 <Text style={modalStyles.label}>Expected Checkout</Text>
-                <Text style={[modalStyles.valBold, { color: '#0F2A2E' }]}>
+                <Text style={[modalStyles.valBold, { color: '#8c5d77' }]}>
                   {pendingItem.expected_checkout}
                 </Text>
               </View>
@@ -166,7 +166,7 @@ function GlobalApprovalModal({ badges }: { badges: any }) {
             </View>
 
             <View style={[modalStyles.row, { borderBottomWidth: 0, paddingTop: 6 }]}>
-              <Text style={[modalStyles.label, { fontWeight: '800', color: '#0F2A2E' }]}>
+              <Text style={[modalStyles.label, { fontWeight: '800', color: '#8c5d77' }]}>
                 Net Payable
               </Text>
               <Text style={modalStyles.valNet}>
@@ -448,7 +448,7 @@ const styles = StyleSheet.create({
     position: 'relative',
     backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
+    borderTopColor: '#f2e6ee',
     shadowColor: '#0F2A2E',
     shadowOffset: { width: 0, height: -2 },
     shadowOpacity: 0.06,
@@ -467,7 +467,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 1.5,
-    backgroundColor: '#C59132',
+    backgroundColor: '#8c5d77',
     zIndex: 1
   },
   slidingContainer: {
@@ -483,10 +483,10 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#C59132', // Warm Hotel City Park brass/gold
+    backgroundColor: '#8c5d77',
     marginTop: 4,
     zIndex: 3,
-    shadowColor: '#C59132',
+    shadowColor: '#8c5d77',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.35,
     shadowRadius: 5,
@@ -524,7 +524,7 @@ const styles = StyleSheet.create({
   activeLabel: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#0F2A2E',
+    color: '#8c5d77',
     marginTop: 2
   },
   inactiveLabel: {
@@ -579,7 +579,7 @@ const modalStyles = StyleSheet.create({
     borderColor: '#E2E8F0'
   },
   modalHeader: {
-    backgroundColor: '#0F2A2E',
+    backgroundColor: '#8c5d77',
     paddingHorizontal: 18,
     paddingVertical: 14,
     flexDirection: 'row',
