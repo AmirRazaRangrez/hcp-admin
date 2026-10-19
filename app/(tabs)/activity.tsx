@@ -35,6 +35,30 @@ const getEventTheme = (type?: string, title?: string) => {
   return { Icon: ReceiptIcon, color: '#4F46E5', label: 'EVENT' };
 };
 
+function formatActivityBody(raw: string): string {
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{') || trimmed.includes('{"')) {
+    try {
+      const match = trimmed.match(/^(\{.*\})(.*)$/s);
+      if (match) {
+        const parsed = JSON.parse(match[1]);
+        const tail = match[2] ? match[2].trim() : '';
+        const guest = parsed.guestName || parsed.name || parsed.customer_name || '';
+        const roomType = parsed.roomType || '';
+        const paid = parsed.paid !== undefined ? ` · Paid: ₹${Number(parsed.paid).toLocaleString('en-IN')}` : '';
+        const pending = parsed.pending !== undefined && Number(parsed.pending) > 0 ? ` (Due: ₹${Number(parsed.pending).toLocaleString('en-IN')})` : '';
+        const mode = parsed.paymentMode ? ` · ${String(parsed.paymentMode).toUpperCase()}` : '';
+        if (guest) {
+          return `${guest}${roomType ? ' · ' + roomType : ''}${paid}${pending}${mode}${tail ? ' ' + tail : ''}`;
+        }
+        return (parsed.items || parsed.description || 'Folio details') + (tail ? ' ' + tail : '');
+      }
+    } catch {}
+  }
+  return raw;
+}
+
 export default function Activity() {
   const router = useRouter();
   const [filter, setFilter] = useState('all');
@@ -101,10 +125,11 @@ export default function Activity() {
         const isCheckin = a.type === 'checkin' || (a.tags && a.tags.includes('checkin'));
         const isApproval = a.type === 'discount' || (a.tags && a.tags.includes('approvals'));
         const isBill = Boolean(a.billId && a.dept);
-        const clickable = Boolean(isCheckin || isApproval || isBill);
+        const isStayFolio = Boolean(a.tags && a.tags.includes('stay') && a.room);
+        const clickable = Boolean(isCheckin || isApproval || isBill || isStayFolio);
 
         const handlePress = () => {
-          if (isCheckin && a.room) {
+          if ((isCheckin || isStayFolio) && a.room) {
             router.push({ pathname: '/room', params: { id: String(a.room) } });
           } else if (isApproval) {
             router.push('/(tabs)/approvals');
@@ -141,13 +166,13 @@ export default function Activity() {
               </View>
 
               {a.body ? (
-                <Text style={styles.eventBody}>{a.body}</Text>
+                <Text style={styles.eventBody}>{formatActivityBody(a.body)}</Text>
               ) : null}
 
               {clickable ? (
                 <View style={styles.cardFooter}>
                   <Text style={styles.viewBillPrompt}>
-                    {isCheckin ? 'View room folio details ›' : isApproval ? 'View discount approval ›' : 'View settled bill details ›'}
+                    {isCheckin || isStayFolio ? 'View room folio details ›' : isApproval ? 'View discount approval ›' : 'View settled bill details ›'}
                   </Text>
                 </View>
               ) : null}

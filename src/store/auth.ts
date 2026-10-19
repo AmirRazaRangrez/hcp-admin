@@ -1,7 +1,7 @@
 import {create} from 'zustand';
 import * as SS from '../lib/storage';
 import axios from 'axios';
-import {SERVER_URL,OWNER_USERNAME,OWNER_PASSWORD,DEMO_MODE} from '../config';
+import {SERVER_URL,OWNER_USERNAME,OWNER_PASSWORD,DEMO_MODE,CLOUD_TUNNEL_URL,fetchCloudTunnelUrl} from '../config';
 
 const DEMO_USER = {id: 0, username: 'owner', full_name: 'Demo Owner', role: 'manager', can_access_manager: true};
 
@@ -28,15 +28,24 @@ export const useAuth = create<S>((set, get) => ({
 
   async load() {
     if (DEMO_MODE) { set({baseUrl: 'demo', token: 'demo', user: DEMO_USER, authError: null, ready: true}); return; }
+    let initialBase = SERVER_URL;
+    if (typeof window !== 'undefined' && window.location?.protocol === 'https:') {
+      initialBase = CLOUD_TUNNEL_URL;
+      fetchCloudTunnelUrl().then(fresh => {
+        if (fresh && fresh !== get().baseUrl) {
+          set({ baseUrl: fresh });
+        }
+      }).catch(() => {});
+    }
     const [t, u] = await Promise.all([SS.getItemAsync('tok'), SS.getItemAsync('usr')]);
     if (t) {
       let user: any = null;
       try { user = u ? JSON.parse(u) : null; } catch {}
-      set({baseUrl: SERVER_URL, token: t, user: user || DEFAULT_USER, ready: true});
+      set({baseUrl: initialBase, token: t, user: user || DEFAULT_USER, ready: true});
       return;
     }
     await get().signIn();
-    set({ready: true, user: get().user || DEFAULT_USER});
+    set({ready: true, baseUrl: initialBase, user: get().user || DEFAULT_USER});
   },
 
   // Silent login with the built-in owner account. Safe to call any time.
@@ -45,14 +54,18 @@ export const useAuth = create<S>((set, get) => ({
     if (pending) return pending;
     pending = (async () => {
       try {
-        const r = await axios.post(SERVER_URL.replace(/\/$/, '') + '/api/auth/login',
+        let activeBase = get().baseUrl || SERVER_URL;
+        if (typeof window !== 'undefined' && window.location?.protocol === 'https:' && activeBase.startsWith('http://')) {
+          activeBase = CLOUD_TUNNEL_URL;
+        }
+        const r = await axios.post(activeBase.replace(/\/$/, '') + '/api/auth/login',
           {username: OWNER_USERNAME, password: OWNER_PASSWORD}, {timeout: 6000});
         const user = r.data?.user;
         if (!r.data?.token) throw new Error('No token returned');
-        await SS.setItemAsync('base', SERVER_URL);
+        await SS.setItemAsync('base', activeBase);
         await SS.setItemAsync('tok', r.data.token);
         await SS.setItemAsync('usr', JSON.stringify(user || DEFAULT_USER));
-        set({baseUrl: SERVER_URL, token: r.data.token, user: user || DEFAULT_USER, authError: null});
+        set({baseUrl: activeBase, token: r.data.token, user: user || DEFAULT_USER, authError: null});
         return true;
       } catch (e: any) {
         // When CRM local server is not accessible, operate in Cloud DB mode with default admin identity

@@ -1,7 +1,7 @@
 // All CRM access goes through here. EXISTING = routes found in the CRM audit (response shapes
 // are normalised defensively; they were not verified). OWNER = routes that do NOT exist in the
 // CRM yet; screens show a "not connected" state until they are added server-side.
-import axios from 'axios';import AsyncStorage from '@react-native-async-storage/async-storage';import {Platform} from 'react-native';import {useAuth} from '../store/auth';import {money} from '../lib/theme';import {DEMO_MODE} from '../config';import {makeDemoApi} from './demo';import {isInHouse,toStay} from '../lib/stay';
+import axios from 'axios';import AsyncStorage from '@react-native-async-storage/async-storage';import {Platform} from 'react-native';import {useAuth} from '../store/auth';import {money} from '../lib/theme';import {DEMO_MODE,CLOUD_TUNNEL_URL} from '../config';import {makeDemoApi} from './demo';import {isInHouse,toStay} from '../lib/stay';
 // ---- CRM safety: every path the app may touch. ROOM_BILLS = /hospitality/history (exists in the CRM; returns bookings, filtered below to checked-out stays). ----
 export const ROUTES={login:'/api/auth/login',stats:'/stats',analytics:'/manager/analytics',restaurantBills:'/restaurant/settled-bills',barBills:'/bar/settled-bills',
  restaurantOrder:'/restaurant/orders/',barOrder:'/bar/orders/',ROOM_BILLS:'/hospitality/history'};
@@ -188,7 +188,7 @@ http.interceptors.request.use(cfg=>{const m=(cfg.method||'get').toLowerCase();if
 const inflight=new Map<string,{t:number;p:Promise<any>}>();
 export const billCache=new Map<string,any>();
 const sget=(url:string,params?:any)=>{const k=url+JSON.stringify(params||{});const h=inflight.get(k);if(h&&Date.now()-h.t<4000)return h.p;const p=http.get(url,{params});inflight.set(k,{t:Date.now(),p});p.catch(()=>inflight.delete(k));return p};
-http.interceptors.request.use(cfg=>{const{baseUrl,token}=useAuth.getState();cfg.baseURL=baseUrl.replace(/\/$/,'')+'/api';if(token)cfg.headers.Authorization=`Bearer ${token}`;return cfg});
+http.interceptors.request.use(cfg=>{let{baseUrl,token}=useAuth.getState();if(typeof window!=='undefined'&&window.location?.protocol==='https:'&&(!baseUrl||baseUrl.startsWith('http://'))){baseUrl=CLOUD_TUNNEL_URL;}cfg.baseURL=baseUrl.replace(/\/$/,'')+'/api';if(token)cfg.headers.Authorization=`Bearer ${token}`;return cfg});
 http.interceptors.response.use(r=>r,async e=>{const cfg:any=e.config;if(e.response?.status===401&&cfg&&!cfg._retry){cfg._retry=true;inflight.clear();const ok=await useAuth.getState().signIn();if(ok)return http.request(cfg)}return Promise.reject(e)});
 export class NotConnected extends Error{constructor(){super('This feature needs an owner endpoint that the CRM server does not have yet.')}}
 export const errMsg=(e:any)=>e instanceof NotConnected?e.message:e?.response?.data?.error||(e?.isAxiosError&&!e?.response?'Cannot reach the CRM server. Check your connection.':e?.message||'Something went wrong');
@@ -451,6 +451,10 @@ async function fetchSupabaseActivity(): Promise<Ev[]> {
   // 2. Room Charges & Approvals
   if (chargesRes.status === 'fulfilled' && Array.isArray(chargesRes.value)) {
     chargesRes.value.forEach((c: any) => {
+      // Skip internal state sync rows
+      if (c.department === 'fb_live_state' || c.department === 'cloud_tunnel_url') {
+        return;
+      }
       if (c.department === 'discount_approval') {
         let meta: any = {};
         try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
@@ -472,8 +476,40 @@ async function fetchSupabaseActivity(): Promise<Ev[]> {
           room: String(c.room_number || meta.room_number || ''),
           by: c.settled_by
         });
+      } else if (c.department === 'room_folio') {
+        let meta: any = {};
+        try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
+        const guestName = meta.guestName || 'Guest';
+        const paid = Number(meta.paid || 0);
+        const pending = Number(meta.pending || 0);
+        const grandTotal = Number(c.grand_total || meta.grandTotal || meta.total || 0);
+        const pMode = meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH';
+
+        if (paid > 0) {
+          out.push({
+            id: `folio-pay:${c.id}`,
+            type: 'payments',
+            tags: ['payments', 'stay', 'all'],
+            dept: 'Room',
+            billId: c.bill_no || c.id,
+            total: paid,
+            title: `Advance Payment · Room ${c.room_number}`,
+            body: `${guestName} · Paid: ${money(paid)}${pending > 0 ? ' (Due: ' + money(pending) + ')' : ' (Settled)'} · ${pMode}`,
+            created_at: c.created_at,
+            guest: guestName,
+            room: String(c.room_number),
+            by: c.settled_by || meta.checkedInBy
+          });
+        }
       } else {
         const dept = (c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1);
+        let summaryText = c.items_summary || 'Food & Beverage';
+        if (typeof summaryText === 'string' && summaryText.trim().startsWith('{')) {
+          try {
+            const parsed = JSON.parse(summaryText);
+            summaryText = parsed.items || parsed.description || parsed.name || (parsed.guestName ? `${parsed.guestName} order` : `${dept} Order`);
+          } catch {}
+        }
         out.push({
           id: `charge:${c.id}`,
           type: 'bills',
@@ -482,7 +518,7 @@ async function fetchSupabaseActivity(): Promise<Ev[]> {
           billId: c.bill_no || c.id,
           total: Number(c.grand_total || 0),
           title: `${dept} charge · Room ${c.room_number}`,
-          body: `${c.items_summary || 'Food & Beverage'} · ${money(Number(c.grand_total || 0))}`,
+          body: `${summaryText} · ${money(Number(c.grand_total || 0))}`,
           created_at: c.created_at,
           room: String(c.room_number),
           by: c.settled_by
