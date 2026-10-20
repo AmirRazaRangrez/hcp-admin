@@ -62,7 +62,7 @@ function formatActivityBody(raw: string): string {
 export default function Activity() {
   const router = useRouter();
   const [filter, setFilter] = useState('all');
-  const { data, err, busy, at, reload } = useLoad(() => api.activity(filter), [filter], 'activity:' + filter);
+  const { data, err, busy, isRefreshing, at, reload } = useLoad(() => api.activity(filter), [filter], 'activity:' + filter);
   const items = data || [];
 
   return (
@@ -70,6 +70,7 @@ export default function Activity() {
       title="Live Activity"
       subtitle="Audit trail & hotel operational logs"
       busy={busy}
+      isRefreshing={isRefreshing}
       reload={reload}
       at={at}
       err={err}

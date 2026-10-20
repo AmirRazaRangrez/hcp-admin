@@ -243,6 +243,42 @@ function RangeCalendar({ from, to, onChange, single }: { from: string; to: strin
   );
 }
 
+const Box = React.memo(
+  ({ t, v, sub, ic, solid, col, line, bg }: any) => (
+    <View style={{
+      flexBasis: '48%',
+      flexGrow: 1,
+      borderRadius: 14,
+      padding: 10,
+      backgroundColor: solid || bg || '#fff',
+      borderWidth: 1.5,
+      borderColor: solid || line || '#f2e6ee',
+      minHeight: 88,
+      justifyContent: 'space-between',
+      shadowColor: '#21181f',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.03,
+      shadowRadius: 4,
+      elevation: 2
+    }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Text numberOfLines={1} style={{ color: solid ? '#fff' : c.ink, fontWeight: '800', fontSize: 10, letterSpacing: 0.3, flexShrink: 1 }}>{t}</Text>
+        <View style={{ transform: [{ scale: 0.85 }] }}>{ic}</View>
+      </View>
+      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75} style={{ color: solid ? '#fff' : (col || c.ink), fontWeight: '900', fontSize: 18, marginVertical: 2 }}>{v}</Text>
+      <Text numberOfLines={1} style={{ color: solid ? '#fbd3e4' : (col || c.mute), fontWeight: '600', fontSize: 10 }}>{sub}</Text>
+    </View>
+  ),
+  (prev, next) =>
+    prev.t === next.t &&
+    prev.v === next.v &&
+    prev.sub === next.sub &&
+    prev.solid === next.solid &&
+    prev.col === next.col &&
+    prev.bg === next.bg &&
+    prev.line === next.line
+);
+
 export default function AnalyticsTab() {
   const router = useRouter();
   const params = useLocalSearchParams<{ dept?: string }>();
@@ -340,8 +376,8 @@ export default function AnalyticsTab() {
 
   const ok = OK.test(from) && OK.test(to);
 
-  // High-Speed Concurrent Fetch with Date-Scoped Payloads
-  const { data, err, busy, at, reload } = useLoad(
+  // High-Speed Concurrent Fetch with Date-Scoped Payloads and Instant Cache
+  const { data, err, busy, isRefreshing, at, reload } = useLoad(
     async () => {
       const dateParams = { from_date: from, to_date: to, startDate: from, endDate: to };
       const [an, bList, expList] = await Promise.all([
@@ -422,11 +458,11 @@ export default function AnalyticsTab() {
   const netRealization = s?.netProfit !== undefined ? n(s.netProfit) : Math.max(0, grandTotal - totalExpAmt);
   const netCashDrawer = s?.cashInDrawer !== undefined ? n(s.cashInDrawer) : Math.max(0, grandCash - cashExpAmt);
 
-  // Virtualized rendering: render 25 items first for instantaneous UI responsiveness
-  const [displayLimit, setDisplayLimit] = useState(25);
+  // Virtualized rendering: render 15 items first for instantaneous UI responsiveness
+  const [displayLimit, setDisplayLimit] = useState(15);
 
   useEffect(() => {
-    setDisplayLimit(25);
+    setDisplayLimit(15);
   }, [from, to, activeDept, fromBillNo, toBillNo, sortOrder]);
 
   // Filter & sort bills based on user criteria
@@ -476,32 +512,6 @@ export default function AnalyticsTab() {
     return filteredBills.slice(0, displayLimit);
   }, [filteredBills, displayLimit]);
 
-  const Box = ({ t, v, sub, ic, solid, col, line, bg }: any) => (
-    <View style={{
-      flexBasis: '48%',
-      flexGrow: 1,
-      borderRadius: 14,
-      padding: 10,
-      backgroundColor: solid || bg || '#fff',
-      borderWidth: 1.5,
-      borderColor: solid || line || '#f2e6ee',
-      minHeight: 88,
-      justifyContent: 'space-between',
-      shadowColor: '#21181f',
-      shadowOffset: { width: 0, height: 1 },
-      shadowOpacity: 0.03,
-      shadowRadius: 4,
-      elevation: 2
-    }}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Text numberOfLines={1} style={{ color: solid ? '#fff' : c.ink, fontWeight: '800', fontSize: 10, letterSpacing: 0.3, flexShrink: 1 }}>{t}</Text>
-        <View style={{ transform: [{ scale: 0.85 }] }}>{ic}</View>
-      </View>
-      <Text numberOfLines={1} adjustsFontSizeToFit style={{ color: solid ? '#fff' : (col || c.ink), fontWeight: '900', fontSize: 18, marginVertical: 2 }}>{v}</Text>
-      <Text numberOfLines={1} style={{ color: solid ? '#fbd3e4' : (col || c.mute), fontWeight: '600', fontSize: 10 }}>{sub}</Text>
-    </View>
-  );
-
   // Active filter label for top bar summary
   const getActiveSummary = () => {
     let dateStr = '';
@@ -534,6 +544,7 @@ export default function AnalyticsTab() {
       title={pageTitle}
       subtitle={`${from} to ${to}`}
       busy={busy}
+      isRefreshing={isRefreshing}
       reload={reload}
       at={at}
       err={err}
@@ -611,11 +622,30 @@ export default function AnalyticsTab() {
       {activeDept === 'all' && (
         <View style={styles.deptSection}>
           <View style={styles.sectionHeaderCard}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View style={styles.sectionHeaderLeft}>
               <View style={[styles.sectionIconBadge, { backgroundColor: '#F0FDF4' }]}>
                 <PaymentIcon size={18} color="#0E8A5F" />
               </View>
-              <Text style={styles.sectionTitle}>Total Business Realization (Hospitality + Restaurant + Bar)</Text>
+              <View style={styles.sectionTitleContainer}>
+                <Text
+                  style={styles.sectionTitle}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  Total Business Realization
+                </Text>
+                <Text
+                  style={styles.sectionSubtitle}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  Hospitality + Restaurant + Bar
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -659,11 +689,30 @@ export default function AnalyticsTab() {
       {activeDept === 'hospitality' && (
         <View style={styles.deptSection}>
           <View style={styles.sectionHeaderCard}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View style={styles.sectionHeaderLeft}>
               <View style={[styles.sectionIconBadge, { backgroundColor: '#EFF6FF' }]}>
                 <HotelIcon size={18} color="#2563EB" />
               </View>
-              <Text style={styles.sectionTitle}>Room Hospitality Analytics</Text>
+              <View style={styles.sectionTitleContainer}>
+                <Text
+                  style={styles.sectionTitle}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  Room Hospitality Analytics
+                </Text>
+                <Text
+                  style={styles.sectionSubtitle}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  Rooms & Lodging Operations
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -687,11 +736,30 @@ export default function AnalyticsTab() {
       {activeDept === 'bar' && (
         <View style={styles.deptSection}>
           <View style={styles.sectionHeaderCard}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View style={styles.sectionHeaderLeft}>
               <View style={[styles.sectionIconBadge, { backgroundColor: '#F5F3FF' }]}>
                 <BarIcon size={18} color="#7C3AED" />
               </View>
-              <Text style={styles.sectionTitle}>Bar Analytics</Text>
+              <View style={styles.sectionTitleContainer}>
+                <Text
+                  style={styles.sectionTitle}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  Bar Analytics
+                </Text>
+                <Text
+                  style={styles.sectionSubtitle}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  Beverages, Cocktails & Liquor
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -712,11 +780,30 @@ export default function AnalyticsTab() {
       {activeDept === 'restaurant' && (
         <View style={styles.deptSection}>
           <View style={styles.sectionHeaderCard}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View style={styles.sectionHeaderLeft}>
               <View style={[styles.sectionIconBadge, { backgroundColor: '#FFF1F2' }]}>
                 <RestaurantIcon size={18} color="#E11D48" />
               </View>
-              <Text style={styles.sectionTitle}>Restaurant Analytics</Text>
+              <View style={styles.sectionTitleContainer}>
+                <Text
+                  style={styles.sectionTitle}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  Restaurant Analytics
+                </Text>
+                <Text
+                  style={styles.sectionSubtitle}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  Food & Dining Service
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -804,12 +891,13 @@ export default function AnalyticsTab() {
       {/* ========================================================= */}
       {/* FILTER MODAL: Shortcuts, Date Range, Bill No, Sort Order */}
       {/* ========================================================= */}
-      <Modal
-        visible={filterModal}
-        transparent
-        animationType="fade"
-        onRequestClose={closeFilterModal}
-      >
+      {filterModal && (
+        <Modal
+          visible={filterModal}
+          transparent
+          animationType="fade"
+          onRequestClose={closeFilterModal}
+        >
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.modalOverlay}
@@ -984,8 +1072,10 @@ export default function AnalyticsTab() {
           </Animated.View>
         </KeyboardAvoidingView>
       </Modal>
+    )}
 
-      {/* Calendar Sub-Modal for Date Pickers */}
+    {/* Calendar Sub-Modal for Date Pickers */}
+    {!!pk && (
       <Modal transparent animationType="fade" visible={!!pk} onRequestClose={() => setPk('')}>
         <Pressable style={styles.calendarModalOverlay} onPress={() => setPk('')}>
           <Pressable onPress={() => {}}>
@@ -1008,6 +1098,7 @@ export default function AnalyticsTab() {
           </Pressable>
         </Pressable>
       </Modal>
+    )}
     </Screen>
   );
 }
@@ -1127,31 +1218,48 @@ const styles = StyleSheet.create({
   },
   sectionHeaderCard: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
     borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: '#E2E8E6'
+    borderColor: '#E2E8E6',
+    width: '100%',
+    overflow: 'hidden'
+  },
+  sectionHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    minWidth: 0
+  },
+  sectionTitleContainer: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center'
   },
   sectionIconBadge: {
     width: 32,
     height: 32,
     borderRadius: 8,
     alignItems: 'center',
-    justifyContent: 'center'
+    justifyContent: 'center',
+    flexShrink: 0
   },
   sectionTitle: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '800',
-    color: c.ink
+    color: c.ink,
+    flexShrink: 1
   },
   sectionSubtitle: {
-    fontSize: 10.5,
+    fontSize: 11,
+    fontWeight: '600',
     color: c.mute,
-    marginTop: 1
+    marginTop: 2,
+    flexShrink: 1
   },
 
   // Filter Modal

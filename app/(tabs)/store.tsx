@@ -123,7 +123,7 @@ export default function StoreScreen() {
   };
 
   // Load all store bills
-  const { data: storeData, err, busy, at, reload: reloadAll } = useLoad(
+  const { data: storeData, err, busy, isRefreshing, at, reload: reloadAll } = useLoad(
     () => api.storeBills('all'),
     [],
     'store_bills_all'
@@ -569,7 +569,7 @@ export default function StoreScreen() {
 
   return (
     <>
-      <Screen title="Store Inward Bills" {...{ busy, reload: reloadAll, at, err }}>
+      <Screen title="Store Inward Bills" {...{ busy, isRefreshing, reload: reloadAll, at, err }}>
         {/* KPI BANNER */}
         <Card style={st.kpiCard}>
           {/* Top Row: Caption & Summary count */}

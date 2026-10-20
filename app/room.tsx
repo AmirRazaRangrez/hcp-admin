@@ -72,9 +72,10 @@ function buildCrmPayload(s: any, bills: any[]) {
   const extraBedCharge = Number(s?.extra || r.extra_bed_charge || 0);
   const discountAmount = Number(s?.discount || r.discount_amount || 0);
   const taxAmount = Number(r.tax_amount || Math.round(roomCharge * 0.05));
-  const grandTotal = Number(s?.total || (roomCharge + foodTotal + barTotal + extraBedCharge - discountAmount + taxAmount));
+  const grandTotal = Number(s?.total || s?.grandTotal || r.grand_total || (roomCharge + foodTotal + barTotal + extraBedCharge));
   const paid = Number(s?.paid || r.advance_amount || r.total_paid || 0);
   const pending = Math.max(0, grandTotal - paid);
+  const tariffSubtotal = Number(s?.tariffSubtotal || r.room_rate || (discountAmount > 0 ? (roomCharge + discountAmount) : roomCharge));
 
   const payments = Array.isArray(r.payments) && r.payments.length > 0
     ? r.payments
@@ -244,9 +245,10 @@ export default function RoomDetails() {
         const extra = Number(full.extra || full.extra_bed_charge || found?.extra || 0);
         const discount = Number(full.discount_amount || found?.discount || 0);
         const tax = Number(full.tax_amount || Math.round(roomCharge * 0.05));
-        const total = Number(full.grand_total || full.total || found?.total || (roomCharge + fnb + bar + extra - discount + tax));
+        const total = Number(full.grand_total || full.total || found?.total || (roomCharge + fnb + bar + extra));
         const paid = Number(full.total_paid || full.paid || full.advance_payment || full.advance_amount || found?.paid || params.paid || total);
         const pending = Math.max(0, total - paid);
+        const tariffSubtotal = Number(full.room_rate || found?.tariffSubtotal || (discount > 0 ? (roomCharge + discount) : roomCharge));
 
         found = {
           ...(found || {}),
@@ -270,6 +272,7 @@ export default function RoomDetails() {
           bar: found?.bar !== undefined && found?.bar > 0 ? found.bar : bar,
           extra,
           discount,
+          tariffSubtotal,
           total: found?.total || total,
           paid: found?.paid || paid,
           pending: found?.pending !== undefined ? found.pending : pending,
@@ -683,14 +686,19 @@ export default function RoomDetails() {
             <Text style={styles.sectionTitle}>Financial & Billing Summary</Text>
           </View>
           <Card>
-            <DetailRow label="Room Charges" value={money(s.roomCharge)} />
+            {s.discount > 0 ? (
+              <>
+                <DetailRow label="Tariff Subtotal" value={money(s.tariffSubtotal || (s.roomCharge + s.discount))} />
+                <DetailRow label="Discount Applied" value={`− ${money(s.discount)}`} color={c.ok} bold />
+                <DetailRow label="Net Room Charges" value={money(s.roomCharge)} />
+              </>
+            ) : (
+              <DetailRow label="Room Charges" value={money(s.roomCharge)} />
+            )}
             <DetailRow label="Restaurant Charges" value={money(s.restaurant)} />
             <DetailRow label="Bar Lounge Charges" value={money(s.bar)} />
             {s.extra > 0 ? (
               <DetailRow label="Extra Expense (Damages/Services)" value={money(s.extra)} color={c.bad} bold />
-            ) : null}
-            {s.discount > 0 ? (
-              <DetailRow label="Discount Applied" value={`− ${money(s.discount)}`} color={c.ok} bold />
             ) : null}
 
             <View style={styles.rowDivider} />

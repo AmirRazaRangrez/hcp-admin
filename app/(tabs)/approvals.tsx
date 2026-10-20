@@ -25,7 +25,7 @@ export default function Approvals() {
   const [subTab, setSubTab] = useState<'pending' | 'history'>('pending');
   const [activeId, setActiveId] = useState<any>(null);
 
-  const { data, err, busy, at, reload } = useLoad(() => api.approvals(), [], 'approvals');
+  const { data, err, busy, isRefreshing, at, reload } = useLoad(() => api.approvals(), [], 'approvals');
 
   // Support both new { pending, history } and legacy flat array
   const pendingList: any[] = Array.isArray(data)
@@ -74,6 +74,7 @@ export default function Approvals() {
       title="Discounts"
       subtitle={subTab === 'pending' ? `${pendingList.length} pending review` : `${historyList.length} discount records`}
       busy={busy}
+      isRefreshing={isRefreshing}
       reload={reload}
       at={at}
       err={err}

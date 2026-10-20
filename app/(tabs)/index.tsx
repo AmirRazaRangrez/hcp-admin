@@ -59,7 +59,7 @@ const Tile = ({ l, v, m, go, highlight, icon }: any) => {
 export default function Home() {
   const nav = useRouter();
 
-  const { data, err, busy, at, reload } = useLoad(
+  const { data, err, busy, isRefreshing, at, reload } = useLoad(
     async () => {
       const [s, a, ev, exp, occ, bills, store] = await Promise.all([
         api.stats().catch(() => null),
@@ -156,7 +156,7 @@ export default function Home() {
   const netInflow = Math.max(0, hospRevenue - todayExpenses);
 
   return (
-    <Screen logo={require('../../assets/hcp-logo-with-name-transparent.png')} scrollable={true} busy={busy} reload={reload} at={at} err={err}>
+    <Screen logo={require('../../assets/hcp-logo-with-name-transparent.png')} scrollable={true} busy={busy} isRefreshing={isRefreshing} reload={reload} at={at} err={err}>
       {/* Compact Store Bills Aging Dual Strip: Key:Value within height of one strip */}
       <View style={styles.storeCompactDualStrip}>
         {/* Yellow Strip: 15-25 Days */}

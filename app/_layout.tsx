@@ -5,6 +5,10 @@ import * as N from 'expo-notifications';
 import Constants from 'expo-constants';
 import {useAuth} from '../src/store/auth';
 import {api} from '../src/api/client';
+import {hydrateMemCache} from '../src/lib/ui';
+
+// Warm up cache at module load
+hydrateMemCache().catch(() => {});
 
 if(Platform.OS!=='web'){
  N.setNotificationHandler({handleNotification:async()=>({shouldShowAlert:true,shouldPlaySound:true,shouldSetBadge:true})});

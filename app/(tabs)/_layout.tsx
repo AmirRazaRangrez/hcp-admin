@@ -73,7 +73,7 @@ function GlobalApprovalModal({ badges }: { badges: any }) {
       setPendingItem(null);
     }
 
-    const interval = setInterval(fetchPending, 3500);
+    const interval = setInterval(fetchPending, badges?.approvals > 0 ? 8000 : 30000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -216,7 +216,7 @@ function GlobalApprovalModal({ badges }: { badges: any }) {
 }
 
 // Ultra-Modern Apple-Grade Bottom Tab Bar with Safe-Area Insets and Clean Sliding Animation
-function CurvedBottomTabBar({ state, descriptors, navigation, badges }: any) {
+const CurvedBottomTabBar = React.memo(function CurvedBottomTabBar({ state, descriptors, navigation, badges }: any) {
   const insets = useSafeAreaInsets();
   const bottomInset = Platform.OS === 'web' ? 0 : Math.max(insets.bottom, 12);
 
@@ -229,12 +229,6 @@ function CurvedBottomTabBar({ state, descriptors, navigation, badges }: any) {
   );
   const safeActiveIndex = activeIndex >= 0 ? activeIndex : 0;
 
-  const [targetIndex, setTargetIndex] = useState(safeActiveIndex);
-
-  useEffect(() => {
-    setTargetIndex(safeActiveIndex);
-  }, [safeActiveIndex]);
-
   const isWeb = Platform.OS === 'web';
   const tabPercent = visibleRoutes.length > 0 ? 100 / visibleRoutes.length : 20;
 
@@ -245,14 +239,14 @@ function CurvedBottomTabBar({ state, descriptors, navigation, badges }: any) {
   useEffect(() => {
     if (!isWeb) {
       Animated.spring(slideAnim, {
-        toValue: targetIndex,
-        damping: 24,
-        stiffness: 280,
-        mass: 0.7,
+        toValue: safeActiveIndex,
+        damping: 26,
+        stiffness: 300,
+        mass: 0.6,
         useNativeDriver: true
       }).start();
     }
-  }, [targetIndex, isWeb]);
+  }, [safeActiveIndex, isWeb]);
 
   return (
     <View
@@ -282,7 +276,7 @@ function CurvedBottomTabBar({ state, descriptors, navigation, badges }: any) {
             ? ({
                 left: 0,
                 width: `${tabPercent}%`,
-                transform: [{ translateX: `${targetIndex * 100}%` as any }],
+                transform: [{ translateX: `${safeActiveIndex * 100}%` as any }],
                 transition: 'transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1)',
                 willChange: 'transform'
               } as any)
@@ -308,30 +302,20 @@ function CurvedBottomTabBar({ state, descriptors, navigation, badges }: any) {
       <View style={styles.tabRow}>
         {visibleRoutes.map((route: any, idx: number) => {
           const { options } = descriptors[route.key];
-          const isFocused = idx === targetIndex;
+          const isFocused = idx === safeActiveIndex;
           const label = getTabLabel(route.name, options);
           const badge = route.name === 'approvals' ? badges?.approvals : options.tabBarBadge;
 
           const onPress = () => {
-            if (idx === targetIndex) return;
-            setTargetIndex(idx);
+            const isCurrentlyActive = idx === safeActiveIndex;
+            const event = navigation.emit({
+              type: 'tabPress',
+              target: route.key,
+              canPreventDefault: true,
+            });
 
-            const doNavigate = () => {
-              const event = navigation.emit({
-                type: 'tabPress',
-                target: route.key,
-                canPreventDefault: true,
-              });
-
-              if (!event.defaultPrevented) {
-                navigation.navigate(route.name, route.params);
-              }
-            };
-
-            if (typeof React.startTransition === 'function') {
-              React.startTransition(doNavigate);
-            } else {
-              requestAnimationFrame(doNavigate);
+            if (!isCurrentlyActive && !event.defaultPrevented) {
+              navigation.navigate(route.name, route.params);
             }
           };
 
@@ -384,7 +368,7 @@ function CurvedBottomTabBar({ state, descriptors, navigation, badges }: any) {
       </View>
     </View>
   );
-}
+});
 
 export default function TabLayout() {
   const b = useAuth(s => s.badges);

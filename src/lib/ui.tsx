@@ -8,23 +8,62 @@ import { DEMO_MODE } from '../config';
 import { errMsg, NotConnected } from '../api/client';
 import { ChevronLeftIcon } from './icons';
 
-export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string, pollMs: number = 8000) {
-  const [data, set] = useState<T | null>(null);
-  const [err, setErr] = useState<any>(null);
-  const [busy, setBusy] = useState(false);
-  const [at, setAt] = useState<string>();
+// Global high-speed in-memory L1 cache for instant 0ms tab switches and state restores
+const memCache = new Map<string, { d: any; t: string }>();
 
-  // 1. Instant Cache Load on Mount (0ms delay)
+// Exported so app initialization can warm the cache immediately on startup
+export async function hydrateMemCache() {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const cKeys = keys.filter(k => k.startsWith('c:'));
+    if (cKeys.length > 0) {
+      const items = await AsyncStorage.multiGet(cKeys);
+      for (const [k, v] of items) {
+        if (v) {
+          try {
+            const parsed = JSON.parse(v);
+            if (parsed && parsed.d !== undefined) {
+              memCache.set(k.substring(2), parsed);
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+}
+
+// Trigger hydration right away at module load time
+hydrateMemCache().catch(() => {});
+
+export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string, pollMs: number = 8000) {
+  const initialCache = key ? memCache.get(key) : undefined;
+  const [data, set] = useState<T | null>(initialCache ? initialCache.d : null);
+  const [err, setErr] = useState<any>(null);
+  const [busy, setBusy] = useState(!initialCache);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [at, setAt] = useState<string | undefined>(initialCache ? initialCache.t : undefined);
+
+  // 1. Instant Cache Load on Mount (Sync from memory if available, or async from disk)
   useEffect(() => {
     if (!key) return;
+    const currentMem = memCache.get(key);
+    if (currentMem) {
+      set(p => (p === null ? currentMem.d : p));
+      if (currentMem.t) setAt(p => p || currentMem.t);
+      setBusy(false);
+      return;
+    }
+
     let active = true;
     AsyncStorage.getItem('c:' + key).then(j => {
       if (active && j) {
         try {
           const x = JSON.parse(j);
           if (x?.d !== undefined) {
-            set(p => p === null ? x.d : p);
+            memCache.set(key, x);
+            set(p => (p === null ? x.d : p));
             if (x.t) setAt(p => p || x.t);
+            setBusy(false);
           }
         } catch {}
       }
@@ -32,34 +71,54 @@ export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string,
     return () => { active = false; };
   }, [key]);
 
-  // 2. Fetch fresh data in background & update cache
+  // 2. Fetch fresh data in background & update cache (Stale-While-Revalidate)
   const run = useCallback(async (silent = false) => {
-    if (!silent) setBusy(true);
+    const hasData = (key ? memCache.has(key) : false) || data !== null;
+    if (!silent && !hasData) {
+      setBusy(true);
+    } else {
+      setIsRefreshing(true);
+    }
+
     try {
       const d = await fn();
       set(d);
       setErr(null);
       const t = new Date().toISOString();
       setAt(t);
-      if (key) AsyncStorage.setItem('c:' + key, JSON.stringify({ d, t })).catch(() => {});
+      if (key) {
+        memCache.set(key, { d, t });
+        AsyncStorage.setItem('c:' + key, JSON.stringify({ d, t })).catch(() => {});
+      }
     } catch (e: any) {
       setErr(e);
       if (key) {
-        try {
-          const j = await AsyncStorage.getItem('c:' + key);
-          if (j) {
-            const x = JSON.parse(j);
-            set(x.d);
-            setAt(x.t);
-          }
-        } catch {}
+        const mem = memCache.get(key);
+        if (mem) {
+          set(mem.d);
+          setAt(mem.t);
+        } else {
+          try {
+            const j = await AsyncStorage.getItem('c:' + key);
+            if (j) {
+              const x = JSON.parse(j);
+              memCache.set(key, x);
+              set(x.d);
+              setAt(x.t);
+            }
+          } catch {}
+        }
       }
     } finally {
-      if (!silent) setBusy(false);
+      setBusy(false);
+      setIsRefreshing(false);
     }
   }, deps);
 
-  useEffect(() => { run(false); }, [run]);
+  useEffect(() => {
+    const hasCached = key ? memCache.has(key) : false;
+    run(hasCached);
+  }, [run]);
 
   // 3. Automatic background poll (real-time reflection of CRM changes)
   useEffect(() => {
@@ -68,7 +127,7 @@ export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string,
     return () => clearInterval(tm);
   }, [run, pollMs]);
 
-  return { data, err, busy, at, reload: () => run(false) };
+  return { data, err, busy, isRefreshing, at, reload: () => run(false) };
 }
 
 // Ultra-Modern Dark Animated Back Button with spring click feedback
@@ -108,7 +167,51 @@ export function AnimatedBackButton({ onPress }: { onPress: () => void }) {
   );
 }
 
-export function Screen({ title, subtitle, logo, busy, reload, err, at, back, rightAction, children, scrollable = true }: any) {
+// Smooth Continuous Top Progress Indicator
+function SyncProgressBar() {
+  const anim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(anim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true
+        }),
+        Animated.timing(anim, {
+          toValue: 0,
+          duration: 0,
+          useNativeDriver: true
+        })
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [anim]);
+
+  return (
+    <View style={s.syncTrack}>
+      <Animated.View
+        style={[
+          s.syncThumb,
+          {
+            transform: [
+              {
+                translateX: anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [-180, 420]
+                })
+              }
+            ]
+          }
+        ]}
+      />
+    </View>
+  );
+}
+
+export function Screen({ title, subtitle, logo, busy, isRefreshing, reload, err, at, back, rightAction, children, scrollable = true }: any) {
   const router = useRouter();
   const isScroll = scrollable !== false;
 
@@ -124,6 +227,19 @@ export function Screen({ title, subtitle, logo, busy, reload, err, at, back, rig
 
   return (
     <View style={{ flex: 1, backgroundColor: c.bg, ...(Platform.OS === 'web' && !isScroll ? { overflow: 'hidden' as any } : {}) }}>
+      {/* Dynamic Animated Top Sync Loading Bar & Status Pill */}
+      {isRefreshing ? (
+        <View style={s.topSyncBarContainer} pointerEvents="none">
+          <SyncProgressBar />
+          <View style={s.syncPillWrap}>
+            <View style={s.syncPill}>
+              <View style={s.syncPillDot} />
+              <Text style={s.syncPillText}>Updating live data...</Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
+
       {/* Sticky Header - Rendered only on child/detail pages with a back button */}
       {!logo && back && (
         <View style={s.head}>
@@ -323,5 +439,56 @@ export const s = StyleSheet.create({
     shadowOpacity: 0.03,
     shadowRadius: 6,
     elevation: 2
+  },
+  topSyncBarContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 9999
+  },
+  syncTrack: {
+    height: 3,
+    backgroundColor: '#E2E8F0',
+    width: '100%',
+    overflow: 'hidden'
+  },
+  syncThumb: {
+    height: 3,
+    width: 140,
+    backgroundColor: '#8c5d77',
+    borderRadius: 1.5
+  },
+  syncPillWrap: {
+    alignItems: 'center',
+    marginTop: 6
+  },
+  syncPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 10,
+    paddingVertical: 3.5,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E2E8E6',
+    shadowColor: '#0F2A2E',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
+    elevation: 2
+  },
+  syncPillDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#8c5d77'
+  },
+  syncPillText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#8c5d77',
+    letterSpacing: 0.2
   }
 });

@@ -252,7 +252,7 @@ async function fetchSupabaseOccupied() {
       const extra = Number(meta.extra || 0);
       const discount = Number(meta.discount || o.discount_amount || 0);
 
-      const tot = Number(meta.total || meta.grandTotal || folioData?.grand_total || (roomCharge + foodTotal + barTotal + extra - discount));
+      const tot = Number(meta.total || meta.grandTotal || folioData?.grand_total || (roomCharge + foodTotal + barTotal + extra));
       const pd = Number(meta.paid || (folioData?.status === 'settled' ? tot : 0) || o.paid || o.advance_payment || o.total_paid || tot);
       const pending = Math.max(0, tot - pd);
 
