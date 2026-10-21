@@ -136,7 +136,9 @@ export default function Approvals() {
               <View style={styles.itemHeader}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.billTitle}>
-                    {x.room_number ? `Room ${x.room_number}` : `Bill #${x.bill_number || x.bill_id || x.id}`}
+                    {x.room_number
+                      ? (x.room_number.startsWith('Room') ? x.room_number : ((x.room_count && x.room_count > 1) || x.room_number.includes(',') ? `Rooms ${x.room_number}` : `Room ${x.room_number}`))
+                      : `Bill #${x.bill_number || x.bill_id || x.id}`}
                   </Text>
                   {x.guest_name ? (
                     <Text style={styles.guestName}>Guest: {x.guest_name}</Text>
@@ -147,7 +149,8 @@ export default function Approvals() {
 
               <View style={styles.divider} />
 
-              {x.room_number ? <DetailRow label="Department / Room" value={`${x.dept || 'Room'} · Room ${x.room_number}`} /> : null}
+              {x.room_number ? <DetailRow label="Department / Rooms" value={`${x.dept || 'Room'} · ${x.room_number.startsWith('Room') ? x.room_number : (x.room_count && x.room_count > 1 ? `Rooms ${x.room_number}` : `Room ${x.room_number}`)}`} /> : null}
+              {x.room_count ? <DetailRow label="Number of Rooms" value={`${x.room_count} Room${x.room_count > 1 ? 's' : ''}`} bold color="#0284c7" /> : null}
               {x.members ? <DetailRow label="Guest Members" value={x.members} bold /> : null}
               {x.expected_checkout ? <DetailRow label="Expected Checkout" value={x.expected_checkout} bold color={c.ink} /> : null}
               {x.meal_plan ? <DetailRow label="Meal Plan" value={x.meal_plan} bold color="#059669" /> : null}
@@ -233,7 +236,9 @@ export default function Approvals() {
                   <View style={styles.itemHeader}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.billTitle}>
-                        {x.dept ? `${x.dept.toUpperCase()} · ` : ''}{x.room_number ? `Room ${x.room_number}` : `Bill #${x.bill_number || x.bill_id}`}
+                        {x.dept ? `${x.dept.toUpperCase()} · ` : ''}{x.room_number
+                          ? (x.room_number.startsWith('Room') ? x.room_number : ((x.room_count && x.room_count > 1) || x.room_number.includes(',') ? `Rooms ${x.room_number}` : `Room ${x.room_number}`))
+                          : `Bill #${x.bill_number || x.bill_id}`}
                       </Text>
                       {x.guest_name ? (
                         <Text style={styles.guestName}>Guest: {x.guest_name}</Text>
@@ -247,7 +252,8 @@ export default function Approvals() {
 
                   <View style={styles.divider} />
 
-                  {x.room_number ? <DetailRow label="Room Number" value={`Room ${x.room_number}`} /> : null}
+                  {x.room_number ? <DetailRow label="Room Number(s)" value={`${x.room_number.startsWith('Room') ? x.room_number : (x.room_count && x.room_count > 1 ? `Rooms ${x.room_number}` : `Room ${x.room_number}`)}`} /> : null}
+                  {x.room_count ? <DetailRow label="Number of Rooms" value={`${x.room_count} Room${x.room_count > 1 ? 's' : ''}`} bold color="#0284c7" /> : null}
                   {x.expected_checkout ? <DetailRow label="Expected Checkout" value={x.expected_checkout} bold color={c.ink} /> : null}
                   {x.meal_plan ? <DetailRow label="Meal Plan" value={x.meal_plan} bold color="#059669" /> : null}
                   {x.discount_pct ? <DetailRow label="Discount Percentage" value={`${x.discount_pct}%`} bold color={c.brass} /> : null}

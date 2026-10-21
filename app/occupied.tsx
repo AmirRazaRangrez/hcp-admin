@@ -2,13 +2,33 @@ import React from 'react';
 import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { api } from '../src/api/client';
-import { Screen, Card, Badge, useLoad } from '../src/lib/ui';
+import { Screen, Card, Badge, useLoad, memCache } from '../src/lib/ui';
 import { c } from '../src/lib/theme';
 
 export default function Occupied() {
   const router = useRouter();
   const { data, err, busy, at, reload } = useLoad(() => api.occupied(), [], 'occupied');
   const rooms = data || [];
+
+  const handleOpenRoom = (s: any) => {
+    const roomId = String(s.room || s.id);
+    // Prime in-memory cache so room.tsx displays instantaneously with 0ms delay
+    try {
+      memCache?.set('room:' + roomId, { d: s, t: new Date().toISOString() });
+    } catch (_) {}
+    router.push({
+      pathname: '/room',
+      params: {
+        id: roomId,
+        room: String(s.room || s.id),
+        bookingId: String(s.booking_id || s.id || ''),
+        guest: String(s.guest || ''),
+        total: String(s.total || s.roomCharge || ''),
+        paid: String(s.paid || ''),
+        phone: String(s.mobile || '')
+      }
+    });
+  };
 
   return (
     <Screen
@@ -30,7 +50,7 @@ export default function Occupied() {
         {rooms.map((s: any) => (
           <Pressable
             key={s.id}
-            onPress={() => router.push({ pathname: '/room', params: { id: String(s.room || s.id), room: String(s.room || s.id), bookingId: String(s.id) } })}
+            onPress={() => handleOpenRoom(s)}
             style={({ pressed }) => [
               styles.roomCard,
               pressed && styles.roomCardPressed,

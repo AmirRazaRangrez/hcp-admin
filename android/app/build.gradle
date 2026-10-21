@@ -31,7 +31,8 @@ react {
     debuggableVariants = []
 
     /* Bundling */
-    nodeExecutableAndArgs = ["node", "--max-old-space-size=4096"]
+    nodeExecutableAndArgs = ["node", "--max-old-space-size=8192"]
+    extraPackagerArgs = ["--max-workers", "1"]
 
     /* Autolinking */
     autolinkLibrariesWithApp()

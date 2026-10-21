@@ -15,6 +15,7 @@
     "@hookform/resolvers": "^3.9.0",
     "@react-native-async-storage/async-storage": "1.23.1",
     "@react-native-community/netinfo": "11.4.1",
+    "@supabase/supabase-js": "^2.118.0",
     "axios": "^1.7.0",
     "expo": "~52.0.0",
     "expo-asset": "~11.0.5",

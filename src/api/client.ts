@@ -29,8 +29,11 @@ async function fetchSupabaseStoreBills(status: 'live' | 'history' | 'all' = 'all
   const bills = rawBills.map((b: any) => {
     const v = vMap.get(b.vendor_id);
     const billPayments = payments.filter((p: any) => String(p.bill_id) === String(b.id));
+    const modeMatch = String(b.notes || '').match(/Mode:\s*([^,\n\|]+)/i);
+    const parsedMode = (b.payment_mode && b.payment_mode !== 'null' ? b.payment_mode : '') || (modeMatch ? modeMatch[1].trim() : '') || (billPayments[0]?.payment_mode) || 'Bank Transfer';
     return {
       ...b,
+      payment_mode: parsedMode,
       vendor_name: v?.name || 'Store Vendor',
       vendor_mobile: v?.mobile || '',
       payments: billPayments
@@ -374,11 +377,15 @@ async function fetchSupabaseApprovals() {
     try { meta = JSON.parse(row.items_summary || '{}'); } catch {}
     const isPending = (row.status || 'pending').toLowerCase() === 'pending';
     const isApproved = (row.status || '').toLowerCase() === 'approved';
+    const rNum = row.room_number || meta.room_number || '';
+    const rCount = Number(meta.room_count) || (rNum && rNum.includes(',') ? rNum.split(',').length : 1);
     const item = {
       id: meta.approval_id || (row.bill_no ? row.bill_no.replace('APP-', '') : row.id),
       cloud_id: row.id,
       dept: 'Room',
-      room_number: row.room_number || meta.room_number || '',
+      room_number: rNum,
+      room_count: rCount,
+      rooms_list: meta.rooms_list || null,
       guest_name: meta.guest_name || '',
       members: meta.members || '',
       expected_checkout: meta.expected_checkout || '',
@@ -461,6 +468,9 @@ async function fetchSupabaseActivity(): Promise<Ev[]> {
         const isApp = (c.status || '').toLowerCase() === 'approved';
         const isRej = (c.status || '').toLowerCase() === 'rejected';
         const stLabel = isApp ? 'APPROVED' : isRej ? 'REJECTED' : 'PENDING APPROVAL';
+        const roomStr = c.room_number || meta.room_number || '';
+        const roomCount = Number(meta.room_count) || (roomStr && roomStr.includes(',') ? roomStr.split(',').length : 1);
+        const roomLabel = roomStr.startsWith('Room') ? roomStr : (roomCount > 1 ? `Rooms ${roomStr}` : `Room ${roomStr}`);
         out.push({
           id: `app:${c.id}`,
           type: 'discount',
@@ -469,7 +479,7 @@ async function fetchSupabaseActivity(): Promise<Ev[]> {
           billId: c.bill_no,
           discount: Number(meta.discount || 0),
           total: Number(c.grand_total || meta.final_amount || 0),
-          title: `Discount Request · Room ${c.room_number || meta.room_number || ''}`,
+          title: `Discount Request · ${roomLabel}`,
           body: `${meta.guest_name || 'Guest'} · ₹${meta.discount || 0} (${meta.discount_pct || 0}%) · ${stLabel}`,
           created_at: c.created_at,
           guest: meta.guest_name,
@@ -502,18 +512,37 @@ async function fetchSupabaseActivity(): Promise<Ev[]> {
           });
         }
       } else {
+        // Only show settled to room (paid / pending) bills of F&B
+        const roomNum = String(c.room_number || '').trim();
+        if (!roomNum || roomNum === 'null' || roomNum === 'undefined' || roomNum === '0') {
+          return;
+        }
         const dept = (c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1);
         let summaryText = c.items_summary || 'Food & Beverage';
-        if (typeof summaryText === 'string' && summaryText.trim().startsWith('{')) {
-          try {
-            const parsed = JSON.parse(summaryText);
-            summaryText = parsed.items || parsed.description || parsed.name || (parsed.guestName ? `${parsed.guestName} order` : `${dept} Order`);
-          } catch {}
+        if (typeof summaryText === 'string') {
+          const st = summaryText.trim();
+          if (st.startsWith('[') || st.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(st);
+              if (Array.isArray(parsed)) {
+                summaryText = parsed.map((item: any) => {
+                  let itName = item.name || item.item_name || 'Item';
+                  if (typeof itName === 'string' && itName.trim().startsWith('{')) {
+                    try { const inner = JSON.parse(itName); itName = inner.name || inner.item_name || 'Item'; } catch {}
+                  }
+                  return `${itName} × ${item.qty || item.quantity || 1}`;
+                }).join(', ');
+              } else if (parsed && typeof parsed === 'object') {
+                summaryText = parsed.items || parsed.description || parsed.name || (parsed.guestName ? `${parsed.guestName} order` : `${dept} Order`);
+              }
+            } catch {}
+          }
         }
+        const isPaid = (c.status || '').toLowerCase() === 'paid' || (c.status || '').toLowerCase() === 'settled';
         out.push({
           id: `charge:${c.id}`,
           type: 'bills',
-          tags: ['bills', 'fnb', 'payments', 'all'],
+          tags: ['bills', 'fnb', ...(isPaid ? ['payments'] : []), 'all'],
           dept,
           billId: c.bill_no || c.id,
           total: Number(c.grand_total || 0),
@@ -582,21 +611,38 @@ async function feed(): Promise<Ev[]> {
       const r = rs[i];
       if (r.status !== 'fulfilled') return;
       arr(r.value.data).forEach((b: any) => {
+        // User requirement: In activity tab, only show settled to room (paid / pending) bills of F&B
+        const pMode = String(b.payment_mode || '').toLowerCase();
+        const hasRoom = !!b.room_number || !!b.room_id || pMode === 'room_folio' || pMode.includes('room');
+        if (!hasRoom) return; // Skip walk-in table bills not settled to room
         const at = b.settled_at || b.created_at;
         const d = num(b.discount);
+
+        let summaryText = 'Food & Beverage';
+        if (Array.isArray(b.items)) {
+          summaryText = b.items.map((it: any) => `${it.name || it.item_name || 'Item'} × ${it.qty || it.quantity || 1}`).join(', ');
+        } else if (b.items_json) {
+          try {
+            const parsed = typeof b.items_json === 'string' ? JSON.parse(b.items_json) : b.items_json;
+            if (Array.isArray(parsed)) {
+              summaryText = parsed.map((it: any) => `${it.name || it.item_name || 'Item'} × ${it.qty || it.quantity || 1}`).join(', ');
+            }
+          } catch {}
+        }
+        const roomStr = b.room_number ? `Room ${b.room_number}` : (b.room_id ? `Room ${b.room_id}` : '');
         out.push({
           id: `${dept}:${b.id}`,
           type: 'bills',
           tags: ['bills', 'fnb', ...(b.is_paid ? ['payments'] : []), ...(d > 0 ? ['discounts'] : []), 'all'],
           dept,
-          billId: b.id,
-          title: `${dept} bill ${b.order_number || '#' + b.id} settled`,
-          body: `${b.customer_name || 'Walk-in'} · ${money(b.total)}${b.payment_mode ? ' · ' + String(b.payment_mode).replace('_', ' ') : ''}${d > 0 ? ' · discount ' + money(d) : ''}`,
+          billId: b.order_number || b.id,
+          title: `${dept} charge${roomStr ? ' · ' + roomStr : ''}`,
+          body: `${summaryText} · ${money(b.total)}${d > 0 ? ' · discount ' + money(d) : ''}`,
           created_at: at,
           discount: d,
           total: num(b.total),
           guest: b.customer_name,
-          room: b.room_number,
+          room: String(b.room_number || b.room_id || ''),
           by: b.settled_by || b.cashier_name
         });
       });
@@ -734,7 +780,20 @@ const realApi={
      if(!core.every(x=>x.status==='rejected')){
        const roomOk=rs[2].status==='fulfilled';
        const out=rs.flatMap(x=>x.status==='fulfilled'?x.value:[]).sort((x:any,y:any)=>String(y.created_at||'').localeCompare(String(x.created_at||'')));
-       out.forEach((b:any)=>billCache.set(b.dept+':'+b.id,b));
+        out.forEach((b: any) => {
+          billCache.set(b.dept + ':' + b.id, b);
+          if (b.order_number) {
+            billCache.set(b.dept + ':' + b.order_number, b);
+            billCache.set(b.dept + ':' + String(b.order_number).replace(/^#/, ''), b);
+          }
+          if (b.dept === 'Room') {
+            billCache.set('Room_folio:' + b.id, b);
+            if (b.order_number) {
+              billCache.set('Room_folio:' + b.order_number, b);
+              billCache.set('Room_folio:' + String(b.order_number).replace(/^#/, ''), b);
+            }
+          }
+        });
        (out as any).roomOk=roomOk;
        return out;
      }
@@ -744,22 +803,84 @@ const realApi={
      const filter = p.from_date ? `&created_at=gte.${p.from_date}T00:00:00` : '';
      const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?select=*${filter}&order=created_at.desc&limit=60`, { headers: h }).then(x => x.json()).catch(() => []);
      if (Array.isArray(r) && r.length > 0) {
-       const out = r.map((c: any) => ({
-         id: c.id,
-         dept: (c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1),
-         order_number: c.bill_no || `RES-${c.id}`,
-         room_number: c.room_number,
-         total: Number(c.grand_total) || 0,
-         subtotal: Number(c.subtotal) || 0,
-         tax: Number(c.gst) || 0,
-         discount: 0,
-         is_paid: 1,
-         created_at: c.created_at,
-         customer_name: `Room ${c.room_number}`,
-         items_json: JSON.stringify([{ name: c.items_summary || 'Food & Beverage', qty: 1, price: Number(c.grand_total) || 0 }])
-       }));
-       out.forEach((b: any) => billCache.set(b.dept + ':' + b.id, b));
-       return out;
+        const out = r.map((c: any) => {
+          const isFolio = c.department === 'room_folio';
+          const dept = isFolio ? 'Room' : ((c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1));
+          let meta: any = {};
+          if (isFolio || (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('{'))) {
+            try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
+          }
+
+          let itemsArr: any[] = [];
+          if (isFolio) {
+            const rc = Number(meta.roomCharge || 0);
+            if (rc > 0) itemsArr.push({ name: `Room Tariff (${meta.roomType || 'Stay'})`, qty: 1, price: rc });
+            const ft = Number(meta.foodTotal || meta.restaurant || 0);
+            if (ft > 0) itemsArr.push({ name: 'Restaurant / Food Charges', qty: 1, price: ft });
+            const bt = Number(meta.barTotal || meta.bar || 0);
+            if (bt > 0) itemsArr.push({ name: 'Bar Lounge Charges', qty: 1, price: bt });
+            const ex = Number(meta.extra || 0);
+            if (ex > 0) itemsArr.push({ name: 'Extra Bed / Service', qty: 1, price: ex });
+            if (itemsArr.length === 0) {
+              itemsArr.push({ name: `Room Tariff (${meta.roomType || 'Stay'})`, qty: 1, price: Number(c.grand_total || meta.grandTotal || meta.total || 0) });
+            }
+          } else if (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('[')) {
+            try {
+              const rawItems = JSON.parse(c.items_summary);
+              if (Array.isArray(rawItems)) {
+                itemsArr = rawItems.map((it: any) => {
+                  let itName = it.name || it.item_name || 'Item';
+                  if (typeof itName === 'string' && itName.trim().startsWith('{')) {
+                    try { const inner = JSON.parse(itName); itName = inner.name || inner.item_name || 'Item'; } catch {}
+                  }
+                  return { name: itName, qty: Number(it.qty || it.quantity || 1), price: Number(it.price || 0) };
+                });
+              }
+            } catch {}
+          }
+          if (itemsArr.length === 0) {
+            itemsArr = [{ name: c.items_summary || (dept + ' Order'), qty: 1, price: Number(c.grand_total || 0) }];
+          }
+
+          const guestName = isFolio ? (meta.guestName || `Room ${c.room_number}`) : `Room ${c.room_number}`;
+          const orderNum = isFolio ? (meta.voucherNumber || c.bill_no || `R-${c.id}`) : (c.bill_no || `RES-${c.id}`);
+          const total = Number(c.grand_total || meta.grandTotal || meta.total || 0);
+          const subtotal = Number(isFolio ? (meta.roomCharge || c.subtotal || total) : (c.subtotal || total));
+          const discount = Number(isFolio ? (meta.discount || 0) : 0);
+          const pMode = isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : (c.payment_mode || 'room_folio');
+          const isPaid = isFolio ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0) : (c.status === 'pending' || c.status === 'unpaid' ? 0 : 1);
+
+          return {
+            id: c.id,
+            dept,
+            order_number: orderNum,
+            room_number: c.room_number,
+            total,
+            subtotal,
+            tax: Number(c.gst || meta.tax || 0),
+            discount,
+            is_paid: isPaid,
+            created_at: c.created_at,
+            customer_name: guestName,
+            payment_mode: pMode,
+            items_json: JSON.stringify(itemsArr)
+          };
+        });
+        out.forEach((b: any) => {
+          billCache.set(b.dept + ':' + b.id, b);
+          if (b.order_number) {
+            billCache.set(b.dept + ':' + b.order_number, b);
+            billCache.set(b.dept + ':' + String(b.order_number).replace(/^#/, ''), b);
+          }
+          if (b.dept === 'Room') {
+            billCache.set('Room_folio:' + b.id, b);
+            if (b.order_number) {
+              billCache.set('Room_folio:' + b.order_number, b);
+              billCache.set('Room_folio:' + String(b.order_number).replace(/^#/, ''), b);
+            }
+          }
+        });
+        return out;
      }
    } catch {}
    return [];
@@ -853,13 +974,16 @@ const realApi={
 
     // 2. Direct Cloud Supabase fallback (works on 4G/5G/any remote network)
     try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timeoutTimer = controller ? setTimeout(() => controller.abort(), 1500) : null;
+      const signal = controller?.signal;
       const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
       const cleanId = String(id).trim();
       const [occRows, folioRows, chargeRows] = await Promise.all([
-        fetch(SUPABASE_URL + '/rest/v1/active_occupancies?or=(room_number.eq.' + encodeURIComponent(cleanId) + ',booking_id.eq.' + encodeURIComponent(cleanId) + ')&limit=1', { headers: h }).then(r => r.json()).catch(() => []),
-        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=eq.room_folio&limit=1', { headers: h }).then(r => r.json()).catch(() => []),
-        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=in.(restaurant,bar)&select=*', { headers: h }).then(r => r.json()).catch(() => [])
-      ]);
+        fetch(SUPABASE_URL + '/rest/v1/active_occupancies?or=(room_number.eq.' + encodeURIComponent(cleanId) + ',booking_id.eq.' + encodeURIComponent(cleanId) + ')&limit=1', { headers: h, signal }).then(r => r.json()).catch(() => []),
+        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=eq.room_folio&limit=1', { headers: h, signal }).then(r => r.json()).catch(() => []),
+        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=in.(restaurant,bar)&select=*', { headers: h, signal }).then(r => r.json()).catch(() => [])
+      ]).finally(() => { if (timeoutTimer) clearTimeout(timeoutTimer); });
 
       const occ = Array.isArray(occRows) && occRows[0] ? occRows[0] : null;
       const fRow = Array.isArray(folioRows) && folioRows[0] ? folioRows[0] : null;
@@ -941,14 +1065,113 @@ const realApi={
   },
 editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.toLowerCase()}/${id}`,body).then(r=>r.data)),
  deleteBill:(dept:string,id:any)=>owner(()=>http.delete(`/owner/bills/${dept.toLowerCase()}/${id}`).then(r=>r.data)),
- order: async (dept:string,id:any)=>{
-   const cached = billCache.get(dept + ':' + id);
-   try {
-     const r = await sget((dept==='Bar'?ROUTES.barOrder:ROUTES.restaurantOrder)+id);
-     if (r?.data) return r.data as {order:any;logs:any[]};
-   } catch {}
+ order: async (dept: string, id: any) => {
+   const cleanId = String(id || '').replace(/^#/, '').trim();
+   const dNorm = (dept || '').toLowerCase();
+
+   // 1. Check in-memory billCache
+   let cached = billCache.get(dept + ':' + id) || billCache.get(dept + ':' + cleanId);
+   if (!cached && (dNorm === 'room' || dNorm === 'room_folio')) {
+     cached = billCache.get('Room:' + id) || billCache.get('Room:' + cleanId) || billCache.get('Room_folio:' + id) || billCache.get('Room_folio:' + cleanId);
+   }
+   if (!cached) {
+     for (const b of billCache.values()) {
+       const bD = (b.dept || '').toLowerCase();
+       if (bD === dNorm || (bD.includes('room') && dNorm.includes('room')) || dNorm === 'all') {
+         if (String(b.id) === cleanId || String(b.order_number) === cleanId || String(b.order_number) === id || String(b.bill_no) === cleanId) {
+           cached = b;
+           break;
+         }
+       }
+     }
+   }
    if (cached) return { order: cached, logs: [] };
-   return { order: { id, order_number: `#${id}`, dept, total: 0, items_json: '[]' }, logs: [] };
+
+   // 2. Try CRM local endpoint
+   try {
+     const endpoint = dNorm === 'bar' ? ROUTES.barOrder : ROUTES.restaurantOrder;
+     const r = await sget(endpoint + encodeURIComponent(cleanId));
+     if (r?.data?.order) {
+       const ord = r.data.order;
+       ord.dept = dNorm === 'bar' ? 'Bar' : 'Restaurant';
+       billCache.set(dept + ':' + cleanId, ord);
+       return { order: ord, logs: r.data.logs || [] };
+     }
+     if (r?.data?.id) {
+       return { order: r.data, logs: [] };
+     }
+   } catch {}
+
+   // 3. Fallback: Query Supabase Cloud room_charges_inbox
+   try {
+     const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+     const r = await fetch(
+       `${SUPABASE_URL}/rest/v1/room_charges_inbox?or=(bill_no.eq.${encodeURIComponent(cleanId)},id.eq.${encodeURIComponent(cleanId)},order_id.eq.${encodeURIComponent(cleanId)})&limit=1`,
+       { headers: h }
+     ).then(x => x.json()).catch(() => []);
+     if (Array.isArray(r) && r.length > 0) {
+       const c = r[0];
+       const isFolio = c.department === 'room_folio';
+       const effDept = isFolio ? 'Room' : ((c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1));
+       let meta: any = {};
+       if (isFolio || (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('{'))) {
+         try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
+       }
+       let itemsArr: any[] = [];
+       if (isFolio) {
+         const rc = Number(meta.roomCharge || 0);
+         if (rc > 0) itemsArr.push({ name: `Room Tariff (${meta.roomType || 'Stay'})`, qty: 1, price: rc });
+         const ft = Number(meta.foodTotal || meta.restaurant || 0);
+         if (ft > 0) itemsArr.push({ name: 'Restaurant / Food Charges', qty: 1, price: ft });
+         const bt = Number(meta.barTotal || meta.bar || 0);
+         if (bt > 0) itemsArr.push({ name: 'Bar Lounge Charges', qty: 1, price: bt });
+         const ex = Number(meta.extra || 0);
+         if (ex > 0) itemsArr.push({ name: 'Extra Bed / Service', qty: 1, price: ex });
+         if (itemsArr.length === 0) {
+           itemsArr.push({ name: `Room Tariff (${meta.roomType || 'Stay'})`, qty: 1, price: Number(c.grand_total || meta.grandTotal || meta.total || 0) });
+         }
+       } else if (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('[')) {
+         try {
+           const raw = JSON.parse(c.items_summary);
+           if (Array.isArray(raw)) {
+             itemsArr = raw.map((it: any) => {
+               let itName = it.name || it.item_name || 'Item';
+               if (typeof itName === 'string' && itName.trim().startsWith('{')) {
+                 try { const inner = JSON.parse(itName); itName = inner.name || inner.item_name || 'Item'; } catch {}
+               }
+               return { name: itName, qty: Number(it.qty || it.quantity || 1), price: Number(it.price || 0) };
+             });
+           }
+         } catch {}
+       }
+       if (itemsArr.length === 0) {
+         itemsArr = [{ name: c.items_summary || (effDept + ' Order'), qty: 1, price: Number(c.grand_total || 0) }];
+       }
+
+       const total = Number(c.grand_total || meta.grandTotal || meta.total || 0);
+       const subtotal = Number(isFolio ? (meta.roomCharge || c.subtotal || total) : (c.subtotal || total));
+       const ord = {
+         id: c.order_id || c.id,
+         order_number: isFolio ? (meta.voucherNumber || c.bill_no || `R-${c.id}`) : (c.bill_no || `#${cleanId}`),
+         dept: effDept,
+         room_number: c.room_number,
+         customer_name: isFolio ? (meta.guestName || `Room ${c.room_number}`) : `Room ${c.room_number}`,
+         total,
+         subtotal,
+         tax: Number(c.gst || meta.tax || 0),
+         discount: Number(isFolio ? (meta.discount || 0) : 0),
+         payment_mode: isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : (c.payment_mode || 'room_folio'),
+         is_paid: isFolio ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0) : (c.status === 'pending' || c.status === 'unpaid' ? 0 : 1),
+         items_json: JSON.stringify(itemsArr),
+         created_at: c.created_at
+       };
+       billCache.set(dept + ':' + cleanId, ord);
+       billCache.set(effDept + ':' + cleanId, ord);
+       return { order: ord, logs: [] };
+     }
+   } catch {}
+
+   return { order: { id: cleanId, order_number: `#${cleanId}`, dept, total: 0, items_json: '[]' }, logs: [] };
  },
   approvals: async () => {
     try {
@@ -1073,7 +1296,10 @@ editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.
  recordStorePayment: async (body: { bill_id?: number; vendor_id?: number; payment_amount: number; payment_mode?: string; reference_no?: string; paid_by?: string }) => {
   try {
    const res = await http.post('/store/payments', body);
-   if (res.data?.success) return res.data;
+   if (res.data?.success) {
+     recordSupabaseStorePayment(body).catch(() => {});
+     return res.data;
+   }
   } catch (err: any) {
    console.warn('[Store Payment] Local CRM unreachable, recording directly in Supabase cloud:', err.message);
   }

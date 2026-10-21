@@ -7,9 +7,10 @@ import { useAuth } from '../store/auth';
 import { DEMO_MODE } from '../config';
 import { errMsg, NotConnected } from '../api/client';
 import { ChevronLeftIcon } from './icons';
+import { subscribeRealtimeUpdates, TABLE_CACHE_MAP } from '../api/realtime';
 
 // Global high-speed in-memory L1 cache for instant 0ms tab switches and state restores
-const memCache = new Map<string, { d: any; t: string }>();
+export const memCache = new Map<string, { d: any; t: string }>();
 
 // Exported so app initialization can warm the cache immediately on startup
 export async function hydrateMemCache() {
@@ -35,7 +36,7 @@ export async function hydrateMemCache() {
 // Trigger hydration right away at module load time
 hydrateMemCache().catch(() => {});
 
-export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string, pollMs: number = 8000) {
+export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string, pollMs: number = 0) {
   const initialCache = key ? memCache.get(key) : undefined;
   const [data, set] = useState<T | null>(initialCache ? initialCache.d : null);
   const [err, setErr] = useState<any>(null);
@@ -71,13 +72,15 @@ export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string,
     return () => { active = false; };
   }, [key]);
 
-  // 2. Fetch fresh data in background & update cache (Stale-While-Revalidate)
+  // 2. Fetch fresh data in background & update cache
   const run = useCallback(async (silent = false) => {
     const hasData = (key ? memCache.has(key) : false) || data !== null;
-    if (!silent && !hasData) {
-      setBusy(true);
-    } else {
-      setIsRefreshing(true);
+    if (!silent) {
+      if (!hasData) {
+        setBusy(true);
+      } else {
+        setIsRefreshing(true);
+      }
     }
 
     try {
@@ -111,16 +114,37 @@ export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string,
       }
     } finally {
       setBusy(false);
-      setIsRefreshing(false);
+      if (!silent) {
+        setIsRefreshing(false);
+      }
     }
   }, deps);
 
+  // 3. Mount effect: if cache is fresh (< 60s), do NOT re-fetch. If empty or stale, fetch silently.
   useEffect(() => {
-    const hasCached = key ? memCache.has(key) : false;
-    run(hasCached);
+    const cached = key ? memCache.get(key) : undefined;
+    const isFresh = cached && cached.t && (Date.now() - new Date(cached.t).getTime() < 60000);
+    if (!isFresh) {
+      run(Boolean(cached));
+    }
   }, [run]);
 
-  // 3. Automatic background poll (real-time reflection of CRM changes)
+  // 4. Supabase Realtime WebSocket listener:
+  // When a table changes in Supabase, if that table affects this screen's key,
+  // silently update the data immediately!
+  useEffect(() => {
+    if (!key) return;
+    const unsub = subscribeRealtimeUpdates((event) => {
+      const relevantKeys = TABLE_CACHE_MAP[event.table];
+      const affectsUs = !relevantKeys || relevantKeys.some(k => key.startsWith(k) || k.startsWith(key));
+      if (affectsUs || event.table === 'app_wake') {
+        run(true); // Silent real-time update: NO indicator popup, instant data freshness!
+      }
+    });
+    return unsub;
+  }, [key, run]);
+
+  // 5. Optional fallback poll: only if explicitly requested (pollMs > 0)
   useEffect(() => {
     if (pollMs <= 0) return;
     const tm = setInterval(() => run(true), pollMs);
@@ -130,37 +154,34 @@ export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string,
   return { data, err, busy, isRefreshing, at, reload: () => run(false) };
 }
 
-// Ultra-Modern Dark Animated Back Button with spring click feedback
+// Ultra-Modern Dark Animated Back Button with instant reliable click feedback
 export function AnimatedBackButton({ onPress }: { onPress: () => void }) {
   const scale = useRef(new Animated.Value(1)).current;
 
-  const handlePressIn = () => {
-    Animated.spring(scale, {
-      toValue: 0.90,
-      useNativeDriver: Platform.OS !== 'web',
-      speed: 60,
-      bounciness: 4
-    }).start();
-  };
-
-  const handlePressOut = () => {
-    Animated.spring(scale, {
-      toValue: 1,
-      useNativeDriver: Platform.OS !== 'web',
-      speed: 40,
-      bounciness: 6
-    }).start();
+  const handleClick = (e?: any) => {
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+    if (onPress) onPress();
   };
 
   return (
     <Pressable
-      onPress={onPress}
-      onPressIn={handlePressIn}
-      onPressOut={handlePressOut}
-      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-      style={Platform.OS === 'web' ? ({ cursor: 'pointer', outline: 'none', userSelect: 'none' } as any) : undefined}
+      onPress={handleClick}
+      {...(Platform.OS === 'web' ? { onClick: handleClick, role: 'button', tabIndex: 0 } : {})}
+      onPressIn={() => {
+        if (Platform.OS !== 'web') {
+          Animated.spring(scale, { toValue: 0.90, useNativeDriver: true, speed: 60, bounciness: 4 }).start();
+        }
+      }}
+      onPressOut={() => {
+        if (Platform.OS !== 'web') {
+          Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 40, bounciness: 6 }).start();
+        }
+      }}
+      hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+      style={Platform.OS === 'web' ? ({ cursor: 'pointer', outline: 'none', userSelect: 'none', touchAction: 'manipulation' } as any) : undefined}
     >
-      <Animated.View style={[s.backBtn, { transform: [{ scale }] }]}>
+      <Animated.View style={[s.backBtn, Platform.OS !== 'web' ? { transform: [{ scale }] } : null]}>
         <ChevronLeftIcon size={19} color="#FFFFFF" strokeWidth={2.8} />
       </Animated.View>
     </Pressable>
@@ -218,10 +239,32 @@ export function Screen({ title, subtitle, logo, busy, isRefreshing, reload, err,
   const handleBack = () => {
     if (typeof back === 'function') {
       back();
-    } else if (router.canGoBack()) {
+      return;
+    }
+    if (Platform.OS === 'web') {
+      try {
+        if (typeof window !== 'undefined' && window.history && window.history.length > 1) {
+          window.history.back();
+          return;
+        }
+      } catch (_) {}
+      try {
+        if (router.canGoBack()) {
+          router.back();
+          return;
+        }
+      } catch (_) {}
+      try {
+        router.replace('/(tabs)');
+      } catch (_) {
+        router.push('/(tabs)');
+      }
+      return;
+    }
+    if (router.canGoBack()) {
       router.back();
     } else {
-      router.replace('/');
+      router.replace('/(tabs)');
     }
   };
 

@@ -9,9 +9,45 @@ import { Screen, Card, Btn, Badge, useLoad } from '../src/lib/ui';
 import { c, money, when } from '../src/lib/theme';
 
 const items = (o: any) => {
+  if (!o) return [];
   try {
-    const x = JSON.parse(o.items_json || '[]');
-    return Array.isArray(x) ? x : [];
+    const raw = o.items_json;
+    const x = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
+    if (Array.isArray(x)) {
+      return x.map((i: any) => {
+        let name = i.name || i.item_name || 'Item';
+        let price = Number(i.price || 0);
+        let qty = Number(i.qty || i.quantity || 1);
+        if (typeof name === 'string' && (name.trim().startsWith('{') || name.trim().startsWith('['))) {
+          try {
+            const inner = JSON.parse(name.trim());
+            if (inner.roomCharge !== undefined) {
+              name = `Room Tariff (${inner.roomType || 'Stay'})`;
+              price = Number(inner.roomCharge || price);
+            } else if (inner.name || inner.item_name) {
+              name = inner.name || inner.item_name;
+              if (inner.price !== undefined) price = Number(inner.price);
+              if (inner.qty !== undefined || inner.quantity !== undefined) qty = Number(inner.qty || inner.quantity);
+            }
+          } catch {}
+        }
+        return { name, price, qty };
+      });
+    }
+    if (x && typeof x === 'object') {
+      const lines: any[] = [];
+      const rc = Number(x.roomCharge || 0);
+      if (rc > 0) lines.push({ name: `Room Tariff (${x.roomType || 'Stay'})`, qty: 1, price: rc });
+      const ft = Number(x.foodTotal || x.restaurant || 0);
+      if (ft > 0) lines.push({ name: 'Restaurant / Food Charges', qty: 1, price: ft });
+      const bt = Number(x.barTotal || x.bar || 0);
+      if (bt > 0) lines.push({ name: 'Bar Lounge Charges', qty: 1, price: bt });
+      const ex = Number(x.extra || 0);
+      if (ex > 0) lines.push({ name: 'Extra Bed / Service', qty: 1, price: ex });
+      if (lines.length > 0) return lines;
+      return [{ name: `Room Tariff (${x.roomType || 'Stay'})`, qty: 1, price: Number(o.total || 0) }];
+    }
+    return [];
   } catch {
     return [];
   }
@@ -25,15 +61,26 @@ export default function Bill() {
   const [sheet, setSheet] = useState(false);
 
   const { data, err, busy, at, reload } = useLoad(
-    async () =>
-      dept === 'Room'
-        ? (async () => {
-            if (!billCache.get('Room:' + id)) await api.bills();
-            const o = billCache.get('Room:' + id);
-            if (!o) throw new Error('This stay is not in the recent checked-out list.');
-            return { order: o, logs: [] };
-          })()
-        : api.order(dept!, id!),
+    async () => {
+      const isRoom = dept === 'Room' || dept === 'Room_folio';
+      if (isRoom) {
+        let o = billCache.get('Room:' + id) || billCache.get('Room_folio:' + id);
+        if (!o) {
+          await api.bills();
+          o = billCache.get('Room:' + id) || billCache.get('Room_folio:' + id);
+        }
+        if (!o) {
+          for (const b of billCache.values()) {
+            if ((b.dept === 'Room' || b.dept === 'Room_folio') && (String(b.id) === String(id) || String(b.order_number) === String(id))) {
+              o = b;
+              break;
+            }
+          }
+        }
+        if (o) return { order: o, logs: [] };
+      }
+      return api.order(dept!, id!);
+    },
     [dept, id],
     `bill:${dept}:${id}`
   );
@@ -65,7 +112,7 @@ export default function Bill() {
     <>
       <Screen
         title={o ? `Bill ${o.order_number}` : 'Bill'}
-        subtitle={dept || 'Folio'}
+        subtitle={dept === 'Room' || dept === 'Room_folio' ? 'Room Stay Folio' : (dept || 'Folio')}
         back
         busy={busy}
         reload={reload}
@@ -80,7 +127,7 @@ export default function Bill() {
                 <Badge text={o.is_paid ? 'PAID' : 'PENDING'} color={o.is_paid ? c.ok : c.warn} />
               </View>
               <Text style={{ color: c.mute, marginTop: 4 }}>
-                {dept} · {when(o.created_at)}
+                {dept === 'Room_folio' ? 'Room' : dept} · {when(o.created_at)}
                 {o.room_number || o.room_id ? ` · Room ${o.room_number || o.room_id}` : ''}
                 {o.nights ? ` · ${o.nights} night(s)` : ''}
               </Text>

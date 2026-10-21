@@ -9,12 +9,12 @@ import {
 } from '../src/lib/crmPrintTemplates';
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Linking, Platform, Alert } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system';
 import { api } from '../src/api/client';
-import { Screen, Card, Badge, useLoad } from '../src/lib/ui';
+import { Screen, Card, Badge, useLoad, memCache } from '../src/lib/ui';
 import { c, money, when } from '../src/lib/theme';
 import { BillCard, BillSheet } from '../src/lib/billsheet';
 import {
@@ -167,53 +167,78 @@ function buildCrmPayload(s: any, bills: any[]) {
 }
 
 export default function RoomDetails() {
+  const router = useRouter();
   const params = useLocalSearchParams<{ id: string; room?: string; guest?: string; total?: string; paid?: string; phone?: string; bookingId?: string }>();
-  const id = params.id;
+  const id = params.id || params.room;
   const [openBill, setOpenBill] = useState<any>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
 
   const { data: stayData, err, busy, at, reload } = useLoad(async () => {
-    let found: any = null;
     const cleanId = String(id || '').trim().toLowerCase();
 
-    // 0. Fetch live Folio first for exact F&B orders, room charge, advance paid, pending, email & aadhar
+    // 0. Instant Cache Check: retrieve room immediately if available in memory
+    let found: any = null;
+    try {
+      const cachedRoom = memCache?.get ? memCache.get('room:' + cleanId)?.d : null;
+      if (cachedRoom) found = cachedRoom;
+      if (!found && memCache?.get) {
+        const occCached = memCache.get('occupied')?.d;
+        if (Array.isArray(occCached)) {
+          found = occCached.find((x: any) =>
+            String(x.room || '').trim().toLowerCase() === cleanId ||
+            String(x.id || '').trim().toLowerCase() === cleanId ||
+            String(x.booking_id || '').trim().toLowerCase() === cleanId
+          );
+        }
+      }
+    } catch (_) {}
+
+    // 1. Live CRM room folio (ultra-fast 10ms local query directly from SQLite database)
     try {
       const folio = await api.roomFolio(id);
       if (folio && folio.room) {
         const fr = folio.room;
         const fs = folio.summary || {};
-        found = {
-          id: String(fr.id || id),
+        const mergedOrders = [
+          ...(folio.restaurantOrders || []).map((o: any) => ({ ...o, dept: 'Restaurant' })),
+          ...(folio.barOrders || []).map((o: any) => ({ ...o, dept: 'Bar' }))
+        ];
+
+        return {
+          ...(found || {}),
+          id: String(fr.id || fr.booking_id || id),
           room: String(fr.room_number || id),
-          guest: fr.guest_name || 'In-House Guest',
-          mobile: fr.mobile || '',
-          email: fr.email || '',
-          aadharNumber: fr.aadhar_number || '',
-          aadhar_number: fr.aadhar_number || '',
-          docType: fr.doc_type || 'Aadhaar Card',
-          doc_type: fr.doc_type || 'Aadhaar Card',
-          address: fr.address || '',
-          dob: fr.dob || '',
-          roomType: fr.room_type || 'Executive Room',
-          checkIn: fr.checkin_time || new Date().toISOString(),
-          checkOut: fr.approx_checkout_time || '',
-          approxCheckOut: fr.approx_checkout_time || '',
-          roomCharge: Number(fs.roomCharge ?? fr.total_room_charge ?? 2993),
-          restaurant: Number(fs.foodTotal ?? 0),
-          bar: Number(fs.barTotal ?? 0),
-          extra: 0,
-          discount: 0,
-          total: Number(fs.grandTotal ?? (Number(fs.roomCharge || 2993) + Number(fs.foodTotal || 0) + Number(fs.barTotal || 0))),
-          paid: Number(fs.advancePaid ?? fr.total_paid ?? 1500),
-          pending: Number(fs.balanceDue ?? 0),
-          source: fr.booking_source || 'Walk-in',
-          checkedInBy: fr.checked_in_by || 'Front Desk',
-          mealPlan: 'EP (Room Only)',
-          voucherNumber: fr.voucher_number || '',
-          advanceReceiptNo: fr.advance_receipt_no || '',
-          paymentMode: fr.advance_payment_mode || 'Cash',
+          guest: fr.guest_name || found?.guest || 'In-House Guest',
+          mobile: fr.mobile || found?.mobile || '',
+          email: fr.email || found?.email || '',
+          aadharNumber: fr.aadhar_number || found?.aadharNumber || '',
+          aadhar_number: fr.aadhar_number || found?.aadhar_number || '',
+          docType: fr.doc_type || found?.docType || 'Aadhaar Card',
+          doc_type: fr.doc_type || found?.doc_type || 'Aadhaar Card',
+          address: fr.address || found?.address || '',
+          dob: fr.dob || found?.dob || '',
+          roomType: fr.room_type || found?.roomType || 'Executive Room',
+          checkIn: fr.checkin_time || found?.checkIn || new Date().toISOString(),
+          checkOut: fr.approx_checkout_time || found?.checkOut || '',
+          approxCheckOut: fr.approx_checkout_time || found?.approxCheckOut || '',
+          roomCharge: Number(fs.roomCharge ?? fr.total_room_charge ?? (found?.roomCharge || 0)),
+          restaurant: Number(fs.foodTotal ?? (found?.restaurant || 0)),
+          bar: Number(fs.barTotal ?? (found?.bar || 0)),
+          extra: Number(fs.hotelExtrasCharge ?? (found?.extra || 0)),
+          discount: Number(fs.discountAmount ?? (found?.discount || 0)),
+          total: Number(fs.grandTotal ?? (found?.total || 0)),
+          paid: Number(fs.advancePaid ?? fr.total_paid ?? (found?.paid || 0)),
+          pending: Number(fs.balanceDue ?? (found?.pending || 0)),
+          source: fr.booking_source || found?.source || 'Walk-in',
+          checkedInBy: fr.checked_in_by || found?.checkedInBy || 'Front Desk',
+          mealPlan: fr.meal_plan || found?.mealPlan || 'EP (Room Only)',
+          voucherNumber: fr.voucher_number || found?.voucherNumber || '',
+          advanceReceiptNo: fr.advance_receipt_no || found?.advanceReceiptNo || '',
+          paymentMode: fr.advance_payment_mode || found?.paymentMode || 'Cash',
           folioRestaurantOrders: folio.restaurantOrders || [],
           folioBarOrders: folio.barOrders || [],
+          folioOrders: mergedOrders,
+          payments: folio.payments || [],
           raw: fr
         };
       }
@@ -221,7 +246,10 @@ export default function RoomDetails() {
       console.warn('[Room Details] live folio fetch error:', e);
     }
 
-    // 1. Try to fetch from occupied list
+    // Return cached room immediately if folio was not reachable
+    if (found) return found;
+
+    // 2. Fallback: fetch from api.occupied()
     try {
       const list = await api.occupied();
       found = list.find((x: any) =>
@@ -230,83 +258,22 @@ export default function RoomDetails() {
         String(x.room_number || '').trim().toLowerCase() === cleanId ||
         String(x.booking_id || '').trim().toLowerCase() === cleanId
       );
+      if (found) return found;
     } catch {}
 
-    // 2. ALWAYS fetch full booking details from CRM backend to get full folio, payments, guest ID proof, address, voucher number
-    try {
-      const targetBookingId = params.bookingId || found?.booking_id || found?.id || id;
-      const full = await api.booking(targetBookingId);
-      if (full) {
-        const rType = String(full.room_type || found?.roomType || '').toLowerCase();
-        const fallbackRate = rType.includes('pent') ? 4500 : (rType.includes('suit') ? 3500 : (rType.includes('deluxe') ? 2200 : 2400));
-        const roomCharge = Number(full.total_room_charge || full.room_charge || full.daily_rate || found?.roomCharge || params.total || fallbackRate);
-        const fnb = Number(full.food_total || found?.restaurant || 0);
-        const bar = Number(full.bar_total || found?.bar || 0);
-        const extra = Number(full.extra || full.extra_bed_charge || found?.extra || 0);
-        const discount = Number(full.discount_amount || found?.discount || 0);
-        const tax = Number(full.tax_amount || Math.round(roomCharge * 0.05));
-        const total = Number(full.grand_total || full.total || found?.total || (roomCharge + fnb + bar + extra));
-        const paid = Number(full.total_paid || full.paid || full.advance_payment || full.advance_amount || found?.paid || params.paid || total);
-        const pending = Math.max(0, total - paid);
-        const tariffSubtotal = Number(full.room_rate || found?.tariffSubtotal || (discount > 0 ? (roomCharge + discount) : roomCharge));
-
-        found = {
-          ...(found || {}),
-          id: String(full.id ?? full.booking_id ?? found?.id ?? id),
-          room: String(full.room_number || full.room || found?.room || id),
-          guest: full.guest_name || full.name || found?.guest || params.guest || 'In-House Guest',
-          mobile: full.mobile || full.phone || found?.mobile || params.phone || '',
-          email: found?.email || full.email || '',
-          aadharNumber: found?.aadharNumber || full.aadhar_number || full.id_number || '',
-          aadhar_number: found?.aadhar_number || full.aadhar_number || full.id_number || '',
-          docType: found?.docType || full.doc_type || 'Aadhaar Card',
-          doc_type: found?.doc_type || full.doc_type || 'Aadhaar Card',
-          address: found?.address || full.address || '',
-          dob: found?.dob || full.dob || '',
-          roomType: full.room_type || full.room_types || found?.roomType || 'Standard Room',
-          checkIn: full.checkin_time || found?.checkIn || new Date().toISOString(),
-          checkOut: full.actual_checkout_time || full.checkout_time || found?.checkOut,
-          approxCheckOut: full.approx_checkout_time || found?.approxCheckOut,
-          roomCharge: found?.roomCharge || roomCharge,
-          restaurant: found?.restaurant !== undefined && found?.restaurant > 0 ? found.restaurant : fnb,
-          bar: found?.bar !== undefined && found?.bar > 0 ? found.bar : bar,
-          extra,
-          discount,
-          tariffSubtotal,
-          total: found?.total || total,
-          paid: found?.paid || paid,
-          pending: found?.pending !== undefined ? found.pending : pending,
-          source: full.booking_source || found?.source || 'Walk-in',
-          checkedInBy: full.checked_in_by || found?.checkedInBy || 'Front Desk',
-          mealPlan: full.meal_plan || found?.mealPlan || 'EP (Room Only)',
-          voucherNumber: full.voucher_number || found?.voucherNumber || '',
-          advanceReceiptNo: full.advance_receipt_no || found?.advanceReceiptNo || '',
-          paymentMode: full.advance_payment_mode || full.final_payment_mode || found?.paymentMode || 'Cash',
-          splitCash: Number(full.split_cash || found?.splitCash || 0),
-          splitCard: Number(full.split_card || found?.splitCard || 0),
-          splitOnline: Number(full.split_online || found?.splitOnline || 0),
-          splitCheque: Number(full.split_cheque || found?.splitCheque || 0),
-          stayDuration: full.stay_duration_str || found?.stayDuration || '',
-          raw: full
-        };
-      }
-    } catch (e) {
-      console.warn('[Room Details] full booking fetch fallback:', e);
-    }
-
-    // 3. Fallback to notification payload params if available
-    if (!found && params.guest) {
+    // 3. Fallback: query params passed from parent view
+    if (params.guest || params.total) {
       const pTotal = Number(params.total || params.paid || 0);
       const pPaid = Number(params.paid || 0);
-      found = {
+      return {
         id: String(params.bookingId || id),
         room: String(params.room || id),
-        guest: String(params.guest),
+        guest: String(params.guest || 'In-House Guest'),
         mobile: String(params.phone || ''),
         email: '',
         address: '',
         dob: '',
-        roomType: 'Executive / Deluxe Room',
+        roomType: 'Executive Room',
         checkIn: new Date().toISOString(),
         roomCharge: pTotal,
         restaurant: 0,
@@ -325,8 +292,7 @@ export default function RoomDetails() {
       };
     }
 
-    if (!found) throw new Error(`Room ${id} details could not be found.`);
-    return found;
+    throw new Error(`Room ${id} details could not be found.`);
   }, [id], 'room:' + id);
 
   const s: any = stayData;
@@ -334,15 +300,17 @@ export default function RoomDetails() {
   const { data: ordersData, busy: ordersBusy, reload: reloadOrders } = useLoad(
     async () => {
       if (!s) return [];
-      const orders = await api.roomOrders(s);
-      if (Array.isArray(orders) && orders.length > 0) return orders;
+      if (s?.folioOrders && s.folioOrders.length > 0) return s.folioOrders;
       if (s?.folioRestaurantOrders || s?.folioBarOrders) {
-        return [...(s.folioRestaurantOrders || []), ...(s.folioBarOrders || [])];
+        return [
+          ...(s.folioRestaurantOrders || []).map((o: any) => ({ ...o, dept: 'Restaurant' })),
+          ...(s.folioBarOrders || []).map((o: any) => ({ ...o, dept: 'Bar' }))
+        ];
       }
       return [];
     },
-    [s?.id, s?.room],
-    'roomOrders:' + (s?.id || '')
+    [s?.id, s?.room, s?.folioOrders?.length, s?.folioRestaurantOrders?.length, s?.folioBarOrders?.length],
+    'roomOrders:' + (s?.id || id || '')
   );
 
   const bills: any[] = (ordersData as any) || [];
@@ -498,9 +466,29 @@ export default function RoomDetails() {
 
   return (
     <Screen
-      title={s ? `Room ${s.room}` : 'Room Details'}
+      title={s ? `Room ${s.room}` : (params.room ? `Room ${params.room}` : 'Room Details')}
       subtitle={s?.roomType || 'Stay Folio'}
-      back
+      back={() => {
+        if (Platform.OS === 'web') {
+          try {
+            if (typeof window !== 'undefined' && window.history && window.history.length > 1) {
+              window.history.back();
+              return;
+            }
+          } catch (_) {}
+        }
+        try {
+          if (router.canGoBack()) {
+            router.back();
+            return;
+          }
+        } catch (_) {}
+        try {
+          router.replace('/occupied');
+        } catch (_) {
+          router.replace('/(tabs)');
+        }
+      }}
       busy={busy || ordersBusy}
       reload={() => { reload(); reloadOrders(); }}
       at={at}

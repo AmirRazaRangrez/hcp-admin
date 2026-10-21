@@ -57,6 +57,7 @@ export default function StoreScreen() {
   // Payment Form States for Bill Modal
   const [payAmount, setPayAmount] = useState<string>('');
   const [payMode, setPayMode] = useState<string>('Bank Transfer');
+  const [originalPayMode, setOriginalPayMode] = useState<string>('Bank Transfer');
   const [payRef, setPayRef] = useState<string>('');
   const [paidBy, setPaidBy] = useState<string>('Admin (Jaijeet sir)');
   const [paying, setPaying] = useState<boolean>(false);
@@ -112,14 +113,45 @@ export default function StoreScreen() {
     }
   };
 
-  // Helper to safely format bill numbers
+  // Helper to safely format bill numbers: Bill #29 -> Bill:29
   const formatBillNo = (b: any) => {
     if (!b) return 'Bill';
-    const raw = String(b.bill_number || '').trim();
+    let raw = String(b.bill_number || '').trim();
     if (!raw || raw.toUpperCase() === 'N/A' || raw.toUpperCase() === '#N/A' || raw.toUpperCase() === 'NULL' || raw.toUpperCase() === 'UNDEFINED') {
-      return `Bill #${b.id || ''}`;
+      raw = String(b.id || '').trim();
     }
-    return raw.startsWith('#') ? raw : `#${raw}`;
+    // Remove any leading 'Bill', 'Bill #', 'Bill:', or '#'
+    raw = raw.replace(/^bill\s*[:#]?\s*/i, '').replace(/^#+/, '').trim();
+    return `Bill:${raw}`;
+  };
+
+  // Helper to resolve the exact payment mode selected by storeman (Cash, Cheque, Bank Transfer, UPI)
+  const getBillPaymentMode = (b: any): string => {
+    if (!b) return 'Bank Transfer';
+    let m = '';
+    if (b.payment_mode && typeof b.payment_mode === 'string' && b.payment_mode.trim() && b.payment_mode !== 'null' && b.payment_mode !== 'undefined') {
+      m = b.payment_mode.trim();
+    } else if (b.notes && typeof b.notes === 'string') {
+      const match = b.notes.match(/Mode:\s*([^,\n\|]+)/i);
+      if (match && match[1]) m = match[1].trim();
+    }
+    if (!m && Array.isArray(b.payments) && b.payments.length > 0 && b.payments[0]?.payment_mode) {
+      m = b.payments[0].payment_mode.trim();
+    }
+    if (!m) return 'Bank Transfer';
+
+    const lower = m.toLowerCase();
+    if (lower.includes('cash')) return 'Cash';
+    if (lower.includes('cheque') || lower.includes('check')) return 'Cheque';
+    if (lower.includes('upi')) return 'UPI';
+    if (lower.includes('bank')) return 'Bank Transfer';
+    return m;
+  };
+
+  const formatModeShort = (mode: string) => {
+    if (!mode) return 'Bank';
+    if (mode === 'Bank Transfer') return 'Bank';
+    return mode;
   };
 
   // Load all store bills
@@ -453,8 +485,12 @@ export default function StoreScreen() {
   // Open Bill Details & Pay Modal
   const openBillModal = (bill: any) => {
     setSelectedBill(bill);
-    setPayAmount(String(bill.pending_amount || ''));
-    setPayMode(bill.payment_mode || 'Bank Transfer');
+    const initialMode = getBillPaymentMode(bill);
+    setOriginalPayMode(initialMode);
+    setPayMode(initialMode);
+    const pendingVal = Number(bill.pending_amount);
+    const pendingStr = (!isNaN(pendingVal) && pendingVal > 0) ? String(pendingVal) : String(bill.pending_amount || '');
+    setPayAmount(pendingStr);
     setPayRef('');
     setPaidBy('Admin (Jaijeet sir)');
   };
@@ -487,11 +523,36 @@ export default function StoreScreen() {
         bill_id: selectedBill.id,
         payment_amount: amount,
         payment_mode: payMode,
-        reference_no: payRef,
-        paid_by: paidBy
+        reference_no: payRef || 'App Payment',
+        paid_by: paidBy || 'Admin (Jaijeet sir)'
       });
 
       const isFull = amount >= Number(selectedBill.pending_amount);
+
+      // Trigger instant push notification to Storeman APK
+      try {
+        fetch('https://hlwmsllmqfdxfmqulrat.supabase.co/functions/v1/send-store-push', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhsd21zbGxtcWZkeGZtcXVscmF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzc4MzgsImV4cCI6MjEwNTMxMzgzOH0.r7Nb8rEJTrZvprpf4G023nMY0suq2OqVGetG0I8esjk'
+          },
+          body: JSON.stringify({
+            title: isFull ? '✅ Bill Paid in Full' : '⚠️ Bill Paid Partly',
+            body: `₹${amount.toLocaleString('en-IN')} paid by Admin for ${selectedBill.vendor_name || 'Vendor'} (${formatBillNo(selectedBill)}) via ${formatModeShort(payMode)}. Status: ${isFull ? 'FULL' : 'PARTLY'}`,
+            type: 'store_payment',
+            topic: 'store_bills',
+            data: {
+              bill_id: String(selectedBill.id),
+              vendor_name: selectedBill.vendor_name || 'Vendor',
+              amount: String(amount),
+              status: isFull ? 'FULL' : 'PARTLY',
+              payment_mode: payMode
+            }
+          })
+        }).catch(() => {});
+      } catch (_) {}
+
       setNoticeModal({
         title: 'Payment Recorded',
         message: isFull
@@ -961,7 +1022,7 @@ export default function StoreScreen() {
                     <View style={st.billCardFooterRow}>
                       <View style={{ flexDirection: 'row', gap: 5, alignItems: 'center' }}>
                         <View style={st.billModeTag}>
-                          <Text style={st.billModeTagText}>{b.payment_mode || 'Bank'}</Text>
+                          <Text style={st.billModeTagText}>{formatModeShort(getBillPaymentMode(b))}</Text>
                         </View>
                         {b.payments && b.payments.length > 0 && (
                           <View style={st.installmentsPill}>
@@ -1176,7 +1237,7 @@ export default function StoreScreen() {
                 </View>
                 <View style={st.summaryRow}>
                   <Text style={st.summaryLabel}>Preferred Mode:</Text>
-                  <Text style={st.summaryVal}>{selectedBill?.payment_mode || 'Bank Transfer'}</Text>
+                  <Text style={st.summaryVal}>{getBillPaymentMode(selectedBill)}</Text>
                 </View>
                 {selectedBill?.notes ? (
                   <View style={st.summaryRow}>
@@ -1296,67 +1357,56 @@ export default function StoreScreen() {
                     )}
                   </View>
 
-                  {/* Dynamic Remark Feedback */}
-                  {billParsedAmount > 0 && (
-                    <View
-                      style={[
-                        st.remarkBox,
-                        isBillFull ? st.remarkBoxFull : st.remarkBoxPartly
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          st.remarkTitle,
-                          isBillFull ? { color: c.ok } : { color: c.warn }
-                        ]}
-                      >
-                        {isBillFull ? 'FULL SETTLEMENT' : 'PARTIAL PAYMENT (PARTLY)'}
-                      </Text>
-                      <Text style={st.remarkBody}>
-                        {isBillFull
-                          ? `Entered amount covers actual pending due (${money(billPendingDue)}). Bill will be marked as FULL PAID.`
-                          : `Entered amount is less than actual due. Bill status will be marked as PARTLY. Remaining balance after payment: ${money(remainingAfterBillPay)}.`}
+                  {/* Settlement Status Badge (Partly / Fully) */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, marginBottom: 8, paddingHorizontal: 2 }}>
+                    <Text style={st.inputLabelNoMargin}>Settlement Type:</Text>
+                    <View style={[st.settlementBadge, isBillFull ? st.settlementBadgeFull : st.settlementBadgePartly]}>
+                      <Text style={[st.settlementBadgeText, isBillFull ? st.settlementBadgeTextFull : st.settlementBadgeTextPartly]}>
+                        {isBillFull ? '🟢 FULL SETTLEMENT' : '🟡 PARTIAL (PARTLY)'}
                       </Text>
                     </View>
-                  )}
-
-                  {/* Payment Mode Selector */}
-                  <Text style={st.inputLabel}>Payment Mode:</Text>
-                  <View style={st.modePillsRow}>
-                    {['Bank Transfer', 'UPI', 'Cash'].map(m => (
-                      <Pressable
-                        key={m}
-                        onPress={() => setPayMode(m)}
-                        style={[st.modePill, payMode === m && st.modePillActive]}
-                      >
-                        <Text style={[st.modePillText, payMode === m && st.modePillTextActive]}>
-                          {m}
-                        </Text>
-                      </Pressable>
-                    ))}
                   </View>
 
-                  {/* Reference / Transaction # */}
-                  <Text style={st.inputLabel}>Reference / UTR / Cheque # (Optional):</Text>
-                  <TextInput
-                    value={payRef}
-                    onChangeText={setPayRef}
-                    placeholder="e.g. UTR1238947, UPI Ref, Cheque 502"
-                    placeholderTextColor={c.mute}
-                    style={st.textInput}
-                  />
+                  {/* Payment Mode Selector with Storeman Default & Original Highlight */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, marginBottom: 6 }}>
+                    <Text style={st.inputLabelNoMargin}>Payment Mode:</Text>
+                    {payMode !== originalPayMode ? (
+                      <View style={st.origModeTag}>
+                        <Text style={st.origModeTagText}>Initial: {formatModeShort(originalPayMode)}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <View style={st.modePillsRow}>
+                    {['Bank Transfer', 'UPI', 'Cash', 'Cheque'].map(m => {
+                      const isSelected = payMode === m;
+                      const isOriginal = originalPayMode === m;
+                      const hasChanged = payMode !== originalPayMode;
+                      return (
+                        <Pressable
+                          key={m}
+                          onPress={() => setPayMode(m)}
+                          style={[
+                            st.modePill,
+                            isSelected && st.modePillActive,
+                            hasChanged && isOriginal && st.modePillOriginal
+                          ]}
+                        >
+                          <Text style={[
+                            st.modePillText,
+                            isSelected && st.modePillTextActive,
+                            hasChanged && isOriginal && st.modePillTextOriginal
+                          ]}>
+                            {m === 'Bank Transfer' ? 'Bank' : m}
+                          </Text>
+                          {hasChanged && isOriginal && (
+                            <View style={st.origDot} />
+                          )}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
 
-                  {/* Paid By */}
-                  <Text style={st.inputLabel}>Paid By:</Text>
-                  <TextInput
-                    value={paidBy}
-                    onChangeText={setPaidBy}
-                    placeholder="Admin (Jaijeet sir)"
-                    placeholderTextColor={c.mute}
-                    style={st.textInput}
-                  />
-
-                  {/* Submit Button */}
+                  {/* Immediate One-Tap Submit Button */}
                   <Pressable
                     disabled={paying || billParsedAmount <= 0}
                     onPress={handleBillPayment}
@@ -1370,7 +1420,7 @@ export default function StoreScreen() {
                     ) : (
                       <Text style={st.confirmPayBtnText}>
                         {isBillFull
-                          ? `Clear Bill & Mark FULL (${money(billParsedAmount)})`
+                          ? `Record Full Payment (${money(billParsedAmount)})`
                           : `Record Partial Payment (${money(billParsedAmount)})`}
                       </Text>
                     )}
@@ -2027,13 +2077,18 @@ const st = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end'
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    width: '100%'
   },
   modalContainer: {
     backgroundColor: '#fff',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: '90%',
+    maxHeight: '96%',
+    width: '98%',
+    maxWidth: '98%',
+    alignSelf: 'center',
     paddingBottom: 24
   },
   modalHeader: {
@@ -2276,6 +2331,50 @@ const st = StyleSheet.create({
     lineHeight: 17
   },
 
+  // Settlement Badges (Partly / Fully)
+  settlementBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1
+  },
+  settlementBadgeFull: {
+    backgroundColor: '#D1FAE5',
+    borderColor: '#10B981'
+  },
+  settlementBadgePartly: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#F59E0B'
+  },
+  settlementBadgeText: {
+    fontSize: 11.5,
+    fontWeight: '800'
+  },
+  settlementBadgeTextFull: {
+    color: '#065F46'
+  },
+  settlementBadgeTextPartly: {
+    color: '#92400E'
+  },
+  inputLabelNoMargin: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: c.ink
+  },
+  origModeTag: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#F59E0B',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 1.5
+  },
+  origModeTagText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#92400E'
+  },
+
   // Mode Pills
   modePillsRow: {
     flexDirection: 'row',
@@ -2294,6 +2393,12 @@ const st = StyleSheet.create({
     backgroundColor: c.ink,
     borderColor: c.ink
   },
+  modePillOriginal: {
+    borderColor: '#D97706',
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    backgroundColor: '#FFFBEB'
+  },
   modePillText: {
     fontSize: 12,
     fontWeight: '600',
@@ -2302,6 +2407,17 @@ const st = StyleSheet.create({
   modePillTextActive: {
     color: '#fff',
     fontWeight: '700'
+  },
+  modePillTextOriginal: {
+    color: '#B45309',
+    fontWeight: '700'
+  },
+  origDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#D97706',
+    marginTop: 3
   },
 
   // Text Inputs

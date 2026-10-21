@@ -38,9 +38,35 @@ const getEventTheme = (type?: string, title?: string) => {
 function formatActivityBody(raw: string): string {
   if (!raw || typeof raw !== 'string') return '';
   const trimmed = raw.trim();
+
+  // 1. JSON Array of line items: [{"id":30,"name":"Tandoori Roti","price":25,"qty":1...}] · ₹26
+  if (trimmed.startsWith('[') || trimmed.includes('["') || trimmed.includes('[{"')) {
+    try {
+      const match = trimmed.match(/^(\[.*?\])(.*)$/s);
+      if (match) {
+        const parsed = JSON.parse(match[1]);
+        const tail = match[2] ? match[2].trim() : '';
+        if (Array.isArray(parsed)) {
+          const itemsStr = parsed.map((i: any) => {
+            let itemName = i.name || i.item_name || 'Item';
+            if (typeof itemName === 'string' && itemName.trim().startsWith('{')) {
+              try {
+                const inner = JSON.parse(itemName);
+                itemName = inner.name || inner.item_name || 'Item';
+              } catch {}
+            }
+            return `${itemName} × ${i.qty || i.quantity || 1}`;
+          }).join(', ');
+          return itemsStr + (tail ? ' ' + tail : '');
+        }
+      }
+    } catch {}
+  }
+
+  // 2. JSON Object of stay / folio metadata: {"roomCharge":1829...}
   if (trimmed.startsWith('{') || trimmed.includes('{"')) {
     try {
-      const match = trimmed.match(/^(\{.*\})(.*)$/s);
+      const match = trimmed.match(/^(\{.*?\})(.*)$/s);
       if (match) {
         const parsed = JSON.parse(match[1]);
         const tail = match[2] ? match[2].trim() : '';

@@ -71,10 +71,11 @@ function handleNotificationNavigation(router: any, response: any) {
       }
     } else if (notifType.includes('store') || notifType.includes('vendor')) {
       router.push('/(tabs)/store');
+    } else if (notifType.includes('analytic') || notifType.includes('revenue') || notifType.includes('report') || title.toLowerCase().includes('analytic') || body.toLowerCase().includes('revenue')) {
+      router.push('/(tabs)/analytics');
     } else if (notifType.includes('restaurant') || notifType.includes('bar')) {
       router.push('/fb');
-    } else {
-      // Default to Home if notification type is unknown or general
+    } else if (notifType.includes('home')) {
       router.push('/(tabs)');
     }
   } catch (err) {
@@ -148,13 +149,44 @@ export default function Root(){
       }
     }
   },[]);
+  // 1. Instant notification click listener: zero delay, 0ms immediate deep linking
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+
+    let handledId = '';
+    const responseSub = N.addNotificationResponseReceivedListener((response) => {
+      const id = response?.notification?.request?.identifier || '';
+      if (id && id === handledId) return;
+      handledId = id;
+      handleNotificationNavigation(router, response);
+    });
+
+    // Cold-start launch: check once on initial mount
+    N.getLastNotificationResponseAsync().then((response) => {
+      if (response) {
+        const id = response?.notification?.request?.identifier || '';
+        if (id && id === handledId) return;
+        handledId = id;
+        const notifDate = response?.notification?.date ? (typeof response.notification.date === 'number' ? response.notification.date : new Date(response.notification.date).getTime()) : 0;
+        const ageMs = notifDate > 0 ? (Date.now() - notifDate) : 0;
+        if (notifDate === 0 || ageMs < 30000) {
+          handleNotificationNavigation(router, response);
+        }
+      }
+    }).catch(() => {});
+
+    return () => {
+      responseSub.remove();
+    };
+  }, []);
+
+  // 2. Background push token registration & channel configuration
   useEffect(() => {
     if (Platform.OS === 'web') return;
 
     let isMounted = true;
     let tokenSub: N.Subscription | null = null;
     let notifSub: N.Subscription | null = null;
-    let responseSub: N.Subscription | null = null;
 
     (async () => {
       try {
@@ -182,7 +214,7 @@ export default function Root(){
           return;
         }
 
-        // 1. Primary: Native FCM Device Token for Android
+        // Native FCM Device Token for Android
         try {
           const devToken = await N.getDevicePushTokenAsync();
           if (devToken?.data && isMounted) {
@@ -193,7 +225,7 @@ export default function Root(){
           console.warn('[Push] Device push token error:', e);
         }
 
-        // 2. Secondary fallback: Expo Push Token
+        // Secondary fallback: Expo Push Token
         try {
           const t = await N.getExpoPushTokenAsync({
             projectId: Constants.expoConfig?.extra?.eas?.projectId
@@ -213,22 +245,6 @@ export default function Root(){
           console.log('[Push] Notification received in app:', notification.request.content.title);
         });
 
-        responseSub = N.addNotificationResponseReceivedListener((response) => {
-          handleNotificationNavigation(router, response);
-        });
-
-        // Handle cold-start launch when app is opened directly by tapping a notification
-        N.getLastNotificationResponseAsync().then((response) => {
-          if (response && isMounted) {
-            const notifDate = response?.notification?.date ? (typeof response.notification.date === 'number' ? response.notification.date : new Date(response.notification.date).getTime()) : 0;
-            const ageMs = notifDate > 0 ? (Date.now() - notifDate) : 0;
-            // Only navigate if notification response was received in the last 15 seconds (prevents stale cached intent redirects)
-            if (notifDate === 0 || ageMs < 15000) {
-              handleNotificationNavigation(router, response);
-            }
-          }
-        }).catch(() => {});
-
       } catch (err) {
         console.warn('[Push] Push registration lifecycle error:', err);
       }
@@ -238,7 +254,6 @@ export default function Root(){
       isMounted = false;
       tokenSub?.remove();
       notifSub?.remove();
-      responseSub?.remove();
     };
   }, [ready, token]);
  return <Stack screenOptions={{headerShown:false}}/>;

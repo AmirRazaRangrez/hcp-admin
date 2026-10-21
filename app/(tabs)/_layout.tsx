@@ -12,6 +12,7 @@ import {
   StoreTabIcon,
   AnalyticsTabIcon
 } from '../../src/lib/icons';
+import { subscribeRealtimeUpdates } from '../../src/api/realtime';
 
 const getTabIcon = (name: string, focused: boolean, color: string) => {
   const size = focused ? 20 : 20;
@@ -73,10 +74,16 @@ function GlobalApprovalModal({ badges }: { badges: any }) {
       setPendingItem(null);
     }
 
-    const interval = setInterval(fetchPending, badges?.approvals > 0 ? 8000 : 30000);
+    // Realtime WebSocket subscription: Trigger immediately when a discount request is created or updated
+    const unsub = subscribeRealtimeUpdates((event) => {
+      if (event.table === 'room_charges_inbox' || event.table === 'app_wake') {
+        fetchPending();
+      }
+    });
+
     return () => {
       active = false;
-      clearInterval(interval);
+      unsub();
     };
   }, [badges?.approvals, dismissedId]);
 
@@ -240,9 +247,9 @@ const CurvedBottomTabBar = React.memo(function CurvedBottomTabBar({ state, descr
     if (!isWeb) {
       Animated.spring(slideAnim, {
         toValue: safeActiveIndex,
-        damping: 26,
-        stiffness: 300,
-        mass: 0.6,
+        damping: 32,
+        stiffness: 380,
+        mass: 0.5,
         useNativeDriver: true
       }).start();
     }
@@ -378,7 +385,9 @@ export default function TabLayout() {
       <Tabs
         tabBar={props => <CurvedBottomTabBar {...props} badges={b} />}
         screenOptions={{
-          headerShown: false
+          headerShown: false,
+          lazy: true,
+          freezeOnBlur: true
         }}
       >
         <Tabs.Screen
