@@ -22,8 +22,28 @@ import {
   PhoneIcon,
   HotelIcon,
   CreditCardIcon,
-  RestaurantIcon
+  RestaurantIcon,
+  ClockIcon,
+  CheckoutIcon
 } from '../src/lib/icons';
+
+const formatDT = (val?: string) => {
+  if (!val) return '—';
+  try {
+    const d = new Date(String(val).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return String(val);
+    return d.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  } catch {
+    return String(val);
+  }
+};
 
 const DetailRow = ({ label, value, bold, color, onPress }: any) => {
   if (value === undefined || value === null || value === '') return null;
@@ -168,8 +188,19 @@ function buildCrmPayload(s: any, bills: any[]) {
 
 export default function RoomDetails() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ id: string; room?: string; guest?: string; total?: string; paid?: string; phone?: string; bookingId?: string }>();
+  const params = useLocalSearchParams<{
+    id: string;
+    room?: string;
+    guest?: string;
+    total?: string;
+    paid?: string;
+    phone?: string;
+    bookingId?: string;
+    isCheckout?: string;
+    checkoutId?: string;
+  }>();
   const id = params.id || params.room;
+  const isCheckoutParam = params.isCheckout === 'true' || params.isCheckout === '1';
   const [openBill, setOpenBill] = useState<any>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
 
@@ -193,10 +224,37 @@ export default function RoomDetails() {
       }
     } catch (_) {}
 
-    // 1. Live CRM room folio (ultra-fast 10ms local query directly from SQLite database)
+    // 1. Live CRM room folio or checkout folio
     try {
       const folio = await api.roomFolio(id);
-      if (folio && folio.room) {
+      if (folio && (folio.room || folio.isCheckout)) {
+        if (folio.isCheckout) {
+          const fr = folio.room || {};
+          return {
+            isCheckout: true,
+            id: String(fr.id || id),
+            room: String(folio.roomNumber || folio.room || fr.room_numbers || fr.room_number || id),
+            roomNumber: String(folio.roomNumber || folio.room || fr.room_numbers || fr.room_number || id),
+            guest: fr.guest_name || folio.guest || folio.guestName || 'Valued Guest',
+            guestName: fr.guest_name || folio.guest || folio.guestName || 'Valued Guest',
+            mobile: fr.mobile || folio.mobile || params.phone || '',
+            adults: Number(fr.adults || folio.adults || 1),
+            children: Number(fr.children ?? folio.children ?? 0),
+            mealPlan: fr.meal_plan || folio.mealPlan || 'without_breakfast',
+            roomCount: Number(fr.room_count || folio.roomCount || 1),
+            checkIn: fr.checkin_time || folio.checkIn || new Date().toISOString(),
+            checkOut: fr.actual_checkout_time || folio.checkOut || new Date().toISOString(),
+            checkoutTime: fr.actual_checkout_time || folio.checkOut || new Date().toISOString(),
+            checkedInBy: fr.checked_in_by || folio.checkedInBy || 'Front Desk',
+            checkedOutBy: fr.checked_out_by || folio.checkedOutBy || 'Staff',
+            payments: folio.payments || fr.payments || [],
+            total: Number(folio.summary?.grandTotal ?? folio.total ?? 0),
+            paid: Number(folio.summary?.advancePaid ?? folio.paid ?? 0),
+            pending: 0,
+            raw: fr
+          };
+        }
+
         const fr = folio.room;
         const fs = folio.summary || {};
         const mergedOrders = [
@@ -205,6 +263,7 @@ export default function RoomDetails() {
         ];
 
         return {
+          isCheckout: isCheckoutParam,
           ...(found || {}),
           id: String(fr.id || fr.booking_id || id),
           room: String(fr.room_number || id),
@@ -262,19 +321,24 @@ export default function RoomDetails() {
     } catch {}
 
     // 3. Fallback: query params passed from parent view
-    if (params.guest || params.total) {
+    if (params.guest || params.total || params.room || isCheckoutParam) {
       const pTotal = Number(params.total || params.paid || 0);
-      const pPaid = Number(params.paid || 0);
+      const pPaid = Number(params.paid || pTotal);
       return {
+        isCheckout: isCheckoutParam,
         id: String(params.bookingId || id),
         room: String(params.room || id),
-        guest: String(params.guest || 'In-House Guest'),
+        roomNumber: String(params.room || id),
+        guest: String(params.guest || 'Valued Guest'),
+        guestName: String(params.guest || 'Valued Guest'),
         mobile: String(params.phone || ''),
         email: '',
         address: '',
         dob: '',
         roomType: 'Executive Room',
         checkIn: new Date().toISOString(),
+        checkOut: new Date().toISOString(),
+        checkoutTime: new Date().toISOString(),
         roomCharge: pTotal,
         restaurant: 0,
         bar: 0,
@@ -282,13 +346,20 @@ export default function RoomDetails() {
         discount: 0,
         total: pTotal,
         paid: pPaid,
-        pending: Math.max(0, pTotal - pPaid),
+        pending: isCheckoutParam ? 0 : Math.max(0, pTotal - pPaid),
         source: 'Front Desk',
         checkedInBy: 'Front Desk',
-        mealPlan: 'EP (Room Only)',
+        checkedOutBy: 'Staff',
+        mealPlan: 'Without Breakfast',
         voucherNumber: '',
         advanceReceiptNo: '',
-        paymentMode: 'Cash'
+        paymentMode: 'Cash',
+        payments: pPaid > 0 ? [{
+          amount: pPaid,
+          mode: 'Settled',
+          date: new Date().toISOString(),
+          cashier: 'Staff'
+        }] : []
       };
     }
 
@@ -464,10 +535,62 @@ export default function RoomDetails() {
     }
   };
 
+  const isCheckout = Boolean(
+    s?.isCheckout ||
+    isCheckoutParam ||
+    s?.status === 'checked_out' ||
+    s?.stayStatus === 'CHECKED_OUT' ||
+    Boolean(s?.checkOut && s?.raw?.status === 'checked_out')
+  );
+
+  // User requirement for check out: show ONLY:
+  // 1. Name
+  const guestName = s?.guestName || s?.guest || s?.raw?.guest_name || 'Valued Guest';
+  // 2. mob number
+  const mobile = s?.mobile || s?.phone || s?.raw?.mobile || '';
+  // 3. no of adults
+  const adults = Number(s?.adults || s?.raw?.adults || (Number(s?.raw?.adults_male || 0) + Number(s?.raw?.adults_female || 0) + Number(s?.raw?.adults_other || 0)) || 1);
+  // 4. children
+  const children = Number(s?.children ?? s?.raw?.children ?? 0);
+  // 5. with / withought breakfast
+  const rawMealPlan = String(s?.mealPlan || s?.raw?.meal_plan || '').toLowerCase();
+  const isWithBreakfast = rawMealPlan.includes('with_breakfast') || rawMealPlan.includes('with breakfast') || rawMealPlan.includes('breakfast');
+  const mealPlanDisplay = isWithBreakfast ? 'With Breakfast' : 'Without Breakfast';
+  // 6. number of rooms
+  const roomCount = Number(s?.roomCount || s?.raw?.room_count || (Array.isArray(s?.rooms) ? s.rooms.length : (String(s?.room || s?.roomNumber || '').split(',').length || 1)));
+  // 7. room number
+  const roomNumberDisplay = String(s?.roomNumber || s?.room || (Array.isArray(s?.rooms) ? s.rooms.join(', ') : (s?.raw?.room_number || id)));
+  // 8. checkin tmie
+  const checkinTimeFormatted = formatDT(s?.checkIn || s?.checkinTime || s?.raw?.checkin_time);
+  // 9. payment history with date & time
+  const paymentsList: any[] = Array.isArray(s?.payments) && s.payments.length > 0
+    ? s.payments
+    : (Array.isArray(s?.raw?.payments) && s.raw.payments.length > 0
+        ? s.raw.payments
+        : (Number(s?.paid || s?.total || 0) > 0 ? [{
+            amount: Number(s?.paid || s?.total || 0),
+            mode: s?.paymentMode || s?.raw?.final_settlement_mode || s?.raw?.advance_payment_mode || 'Settled',
+            date: s?.checkOut || s?.checkIn || new Date().toISOString(),
+            cashier: s?.checkedOutBy || s?.checkedInBy || 'Staff',
+            receiptNo: s?.raw?.final_receipt_no || s?.advanceReceiptNo || ''
+          }] : []));
+  // 10. accept by (name of staff)
+  const staffName = s?.checkedOutBy || s?.checkedInBy || s?.raw?.checked_out_by || s?.raw?.checked_in_by || 'Staff';
+  // 11. checkout
+  const checkoutTimeFormatted = formatDT(s?.checkOut || s?.checkoutTime || s?.raw?.actual_checkout_time || s?.raw?.checkout_time);
+
   return (
     <Screen
-      title={s ? `Room ${s.room}` : (params.room ? `Room ${params.room}` : 'Room Details')}
-      subtitle={s?.roomType || 'Stay Folio'}
+      title={
+        isCheckout
+          ? `Check-out · ${roomCount > 1 ? `Rooms ${roomNumberDisplay}` : `Room ${roomNumberDisplay}`}`
+          : (s ? `Room ${s.room}` : (params.room ? `Room ${params.room}` : 'Room Details'))
+      }
+      subtitle={
+        isCheckout
+          ? `${guestName} · Completed Stay`
+          : (s?.roomType || 'Stay Folio')
+      }
       back={() => {
         if (Platform.OS === 'web') {
           try {
@@ -484,7 +607,7 @@ export default function RoomDetails() {
           }
         } catch (_) {}
         try {
-          router.replace('/occupied');
+          router.replace(isCheckout ? '/(tabs)/activity' : '/occupied');
         } catch (_) {
           router.replace('/(tabs)');
         }
@@ -495,6 +618,153 @@ export default function RoomDetails() {
       err={err}
     >
       {s ? (
+        isCheckout ? (
+          /* Tailored Checkout View showing ONLY the 11 user-specified fields */
+          <>
+            <Card style={styles.checkoutCard}>
+              <View style={styles.checkoutHeaderRow}>
+                <View>
+                  <Text style={styles.checkoutHeaderTitle}>
+                    {roomCount > 1 ? `Rooms ${roomNumberDisplay}` : `Room ${roomNumberDisplay}`}
+                  </Text>
+                  <Text style={styles.checkoutHeaderSub}>Completed Stay · Check-out Details</Text>
+                </View>
+                <Badge text="CHECKED OUT" color="#EA580C" />
+              </View>
+
+              <View style={styles.rowDivider} />
+
+              {/* 1. Name */}
+              <DetailRow label="Name" value={guestName} bold />
+
+              {/* 2. mob number */}
+              <DetailRow
+                label="Mobile Number"
+                value={mobile || '—'}
+                bold
+                color={mobile ? c.brass : undefined}
+                onPress={mobile ? () => handleCall(mobile) : undefined}
+              />
+
+              <View style={styles.rowDivider} />
+
+              {/* 3. no of adults */}
+              <DetailRow
+                label="No. of Adults"
+                value={`${adults} Adult${adults > 1 ? 's' : ''}`}
+                bold
+              />
+
+              {/* 4. children */}
+              <DetailRow
+                label="Children"
+                value={`${children} Child${children === 1 ? '' : 'ren'}`}
+                bold
+              />
+
+              {/* 5. with / withought breakfast */}
+              <DetailRow
+                label="Breakfast"
+                value={mealPlanDisplay}
+                bold
+                color={isWithBreakfast ? '#16A34A' : '#64748B'}
+              />
+
+              <View style={styles.rowDivider} />
+
+              {/* 6. number of rooms */}
+              <DetailRow
+                label="Number of Rooms"
+                value={`${roomCount} Room${roomCount > 1 ? 's' : ''}`}
+                bold
+              />
+
+              {/* 7. room number */}
+              <DetailRow
+                label="Room Number"
+                value={roomNumberDisplay}
+                bold
+              />
+
+              <View style={styles.rowDivider} />
+
+              {/* 8. checkin tmie */}
+              <DetailRow
+                label="Check-in Time"
+                value={checkinTimeFormatted}
+                bold
+              />
+
+              {/* 11. checkout */}
+              <DetailRow
+                label="Check-out Time"
+                value={checkoutTimeFormatted}
+                bold
+                color="#EA580C"
+              />
+
+              <View style={styles.rowDivider} />
+
+              {/* 10. accept by (name of staff) */}
+              <DetailRow
+                label="Accepted by (Staff)"
+                value={staffName}
+                bold
+              />
+            </Card>
+
+            {/* 9. payment history with date & time */}
+            <View style={styles.sectionHeaderRow}>
+              <CreditCardIcon size={16} color={c.ink} />
+              <Text style={styles.sectionTitle}>Payment History with Date & Time</Text>
+            </View>
+
+            <Card style={styles.checkoutPaymentsCard}>
+              {paymentsList.length === 0 ? (
+                <Text style={styles.noPaymentsText}>No payment history records found.</Text>
+              ) : (
+                paymentsList.map((p: any, idx: number) => {
+                  const pAmt = Number(p.amount || 0);
+                  const pMode = String(p.mode || p.payment_mode || 'Cash').toUpperCase();
+                  const pDate = formatDT(p.date || p.created_at || p.realized_at);
+                  const pStaff = p.cashier || p.cashier_name || staffName || 'Staff';
+                  const pReceipt = p.receiptNo || p.receipt_no;
+                  const isRefund = String(p.type || '').toLowerCase().includes('refund') || pAmt < 0;
+
+                  return (
+                    <View
+                      key={pReceipt || idx}
+                      style={[styles.checkoutPaymentItem, idx > 0 && styles.checkoutPaymentItemBorder]}
+                    >
+                      <View style={styles.checkoutPaymentTopRow}>
+                        <View style={[styles.checkoutPaymentBadge, isRefund && { backgroundColor: '#FEE2E2' }]}>
+                          <Text style={[styles.checkoutPaymentBadgeText, isRefund && { color: '#DC2626' }]}>
+                            {isRefund ? 'REFUND' : pMode}
+                          </Text>
+                        </View>
+                        <Text style={[styles.checkoutPaymentAmount, isRefund ? { color: '#DC2626' } : { color: '#16A34A' }]}>
+                          {isRefund ? `- ${money(Math.abs(pAmt))}` : money(pAmt)}
+                        </Text>
+                      </View>
+
+                      <View style={styles.checkoutPaymentMetaRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <ClockIcon size={12} color="#64748B" />
+                          <Text style={styles.checkoutPaymentDate}>{pDate}</Text>
+                        </View>
+                        <Text style={styles.checkoutPaymentStaff}>Staff: {pStaff}</Text>
+                      </View>
+
+                      {pReceipt ? (
+                        <Text style={styles.checkoutPaymentReceipt}>Receipt No: {pReceipt}</Text>
+                      ) : null}
+                    </View>
+                  );
+                })
+              )}
+            </Card>
+          </>
+        ) : (
         <>
           {/* Top Room Banner Card */}
           <Card style={styles.heroCard}>
@@ -718,7 +988,7 @@ export default function RoomDetails() {
             ))
           )}
         </>
-      ) : null}
+      )) : null}
 
       <BillSheet visible={!!openBill} bill={openBill} onClose={() => setOpenBill(null)} onChanged={() => reloadOrders()} />
     </Screen>
@@ -884,5 +1154,101 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#F0F4F2',
     marginVertical: 6
+  },
+  checkoutCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 3
+  },
+  checkoutHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8
+  },
+  checkoutHeaderTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: c.ink,
+    letterSpacing: -0.4
+  },
+  checkoutHeaderSub: {
+    fontSize: 12,
+    color: c.mute,
+    marginTop: 2,
+    fontWeight: '600'
+  },
+  checkoutPaymentsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    marginTop: 6,
+    marginBottom: 20
+  },
+  checkoutPaymentItem: {
+    paddingVertical: 10
+  },
+  checkoutPaymentItemBorder: {
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9'
+  },
+  checkoutPaymentTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6
+  },
+  checkoutPaymentBadge: {
+    backgroundColor: '#EEF2FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6
+  },
+  checkoutPaymentBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#4F46E5',
+    textTransform: 'uppercase'
+  },
+  checkoutPaymentAmount: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#16A34A'
+  },
+  checkoutPaymentMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 2
+  },
+  checkoutPaymentDate: {
+    fontSize: 12,
+    color: '#64748B'
+  },
+  checkoutPaymentStaff: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#334155'
+  },
+  checkoutPaymentReceipt: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 3
+  },
+  noPaymentsText: {
+    textAlign: 'center',
+    color: c.mute,
+    fontSize: 13,
+    paddingVertical: 12
   }
 });

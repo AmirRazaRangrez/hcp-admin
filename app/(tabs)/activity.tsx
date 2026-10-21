@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { api } from '../../src/api/client';
 import { Screen, Card, Badge, useLoad } from '../../src/lib/ui';
 import { c, when } from '../../src/lib/theme';
@@ -87,7 +87,15 @@ function formatActivityBody(raw: string): string {
 
 export default function Activity() {
   const router = useRouter();
-  const [filter, setFilter] = useState('all');
+  const searchParams = useLocalSearchParams<{ filter?: string }>();
+  const [filter, setFilter] = useState(searchParams.filter || 'all');
+
+  useEffect(() => {
+    if (searchParams.filter) {
+      setFilter(searchParams.filter);
+    }
+  }, [searchParams.filter]);
+
   const { data, err, busy, isRefreshing, at, reload } = useLoad(() => api.activity(filter), [filter], 'activity:' + filter);
   const items = data || [];
 
@@ -150,13 +158,25 @@ export default function Activity() {
         const meta = getEventTheme(a.type, a.title);
         const EventIcon = meta.Icon;
         const isCheckin = a.type === 'checkin' || (a.tags && a.tags.includes('checkin'));
+        const isCheckout = a.type === 'checkout' || (a.tags && a.tags.includes('checkout'));
         const isApproval = a.type === 'discount' || (a.tags && a.tags.includes('approvals'));
         const isBill = Boolean(a.billId && a.dept);
         const isStayFolio = Boolean(a.tags && a.tags.includes('stay') && a.room);
-        const clickable = Boolean(isCheckin || isApproval || isBill || isStayFolio);
+        const clickable = Boolean(isCheckin || isCheckout || isApproval || isBill || isStayFolio);
 
         const handlePress = () => {
-          if ((isCheckin || isStayFolio) && a.room) {
+          if (isCheckout) {
+            router.push({
+              pathname: '/room',
+              params: {
+                id: String(a.room || a.billId || a.id),
+                isCheckout: 'true',
+                room: String(a.room || ''),
+                guest: String(a.guest || ''),
+                total: String(a.total || 0)
+              }
+            });
+          } else if ((isCheckin || isStayFolio) && a.room) {
             router.push({ pathname: '/room', params: { id: String(a.room) } });
           } else if (isApproval) {
             router.push('/(tabs)/approvals');

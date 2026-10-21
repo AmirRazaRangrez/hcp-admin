@@ -277,8 +277,18 @@ export default function Home() {
         />
 
         {/* Row 4: Check-ins & Check-outs Today */}
-        <Tile l="Check-ins Today" v={cin} icon={<CheckinIcon size={14} color="#16A34A" />} />
-        <Tile l="Check-outs Today" v={cout} icon={<CheckoutIcon size={14} color="#EA580C" />} />
+        <Tile
+          l="Check-ins Today"
+          v={cin}
+          icon={<CheckinIcon size={14} color="#16A34A" />}
+          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkin' } })}
+        />
+        <Tile
+          l="Check-outs Today"
+          v={cout}
+          icon={<CheckoutIcon size={14} color="#EA580C" />}
+          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkout' } })}
+        />
 
         {/* Row 5: Discounts Today & Occupancy Rate */}
         <Tile m l="Discounts Today" v={disc} icon={<DiscountIcon size={14} color="#D97706" />} />

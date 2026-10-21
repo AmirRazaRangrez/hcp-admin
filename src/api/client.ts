@@ -486,6 +486,27 @@ async function fetchSupabaseActivity(): Promise<Ev[]> {
           room: String(c.room_number || meta.room_number || ''),
           by: c.settled_by
         });
+      } else if (c.department === 'room_checkout') {
+        let meta: any = {};
+        try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
+        const guestName = meta.guestName || meta.guest_name || 'Guest';
+        const total = Number(c.grand_total || meta.netSettle || meta.total || 0);
+        const rooms = c.room_number || meta.roomNumber || (Array.isArray(meta.roomNumbers) ? meta.roomNumbers.join(', ') : '');
+        out.push({
+          id: `out:${c.id}`,
+          type: 'checkout',
+          tags: ['checkout', 'bills', 'payments', 'stay', 'all'],
+          dept: 'Room',
+          billId: c.bill_no || c.id,
+          title: `Check-out · Room ${rooms}`,
+          body: `${guestName} · Settled ${money(total)} · by ${c.settled_by || meta.checkedOutBy || 'Staff'}`,
+          created_at: c.created_at,
+          total,
+          guest: guestName,
+          room: rooms,
+          by: c.settled_by || meta.checkedOutBy,
+          meta
+        });
       } else if (c.department === 'room_folio') {
         let meta: any = {};
         try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
@@ -972,6 +993,72 @@ const realApi={
       }
     } catch {}
 
+    // 1b. Check if this is a checkout stay from local CRM history
+    try {
+      const histRes = await sget('/api/hospitality/history/' + id);
+      const rec = histRes?.data?.records?.[0] || histRes?.data?.history?.[0] || histRes?.data?.record || histRes?.data;
+      if (rec && (rec.guest_name || rec.room_number || rec.rooms)) {
+        const totalAdults = (rec.adults_male || 0) + (rec.adults_female || 0) + (rec.adults_other || 0) || rec.adults || 1;
+        const totalChildren = rec.children || 0;
+        const roomList = Array.isArray(rec.rooms) ? rec.rooms : [rec.room_number || id];
+        return {
+          isCheckout: true,
+          status: 'checked_out',
+          stayStatus: 'CHECKED_OUT',
+          room: {
+            id: rec.id || id,
+            room_number: roomList.join(', '),
+            room_type: rec.room_type || 'Standard Room',
+            guest_name: rec.guest_name || 'Guest',
+            mobile: rec.mobile || '',
+            adults: totalAdults,
+            children: totalChildren,
+            meal_plan: rec.meal_plan || 'without_breakfast',
+            checkin_time: rec.checkin_time,
+            actual_checkout_time: rec.actual_checkout_time || rec.checkout_time || new Date().toISOString(),
+            checked_in_by: rec.checked_in_by || 'Front Desk',
+            checked_out_by: rec.checked_out_by || 'Staff',
+            room_count: roomList.length,
+            room_numbers: roomList.join(', '),
+            payments: (rec.payments || []).map((p: any) => ({
+              amount: p.amount,
+              mode: p.payment_mode || p.mode || 'Cash',
+              date: p.created_at || p.realized_at,
+              cashier: p.cashier_name || p.cashier || 'Staff',
+              receiptNo: p.receipt_no
+            }))
+          },
+          guestName: rec.guest_name || 'Guest',
+          guest: rec.guest_name || 'Guest',
+          mobile: rec.mobile || '',
+          adults: totalAdults,
+          children: totalChildren,
+          mealPlan: rec.meal_plan || 'without_breakfast',
+          roomCount: roomList.length,
+          roomNumber: roomList.join(', '),
+          room: roomList.join(', '),
+          checkIn: rec.checkin_time,
+          checkOut: rec.actual_checkout_time || rec.checkout_time || new Date().toISOString(),
+          checkedInBy: rec.checked_in_by || 'Front Desk',
+          checkedOutBy: rec.checked_out_by || 'Staff',
+          payments: (rec.payments || []).map((p: any) => ({
+            amount: p.amount,
+            mode: p.payment_mode || p.mode || 'Cash',
+            date: p.created_at || p.realized_at,
+            cashier: p.cashier_name || p.cashier || 'Staff',
+            receiptNo: p.receipt_no
+          })),
+          restaurantOrders: [],
+          barOrders: [],
+          summary: {
+            grandTotal: rec.grand_total || rec.total_paid || 0,
+            advancePaid: rec.total_paid || 0,
+            balanceDue: 0
+          }
+        };
+      }
+    } catch {}
+
     // 2. Direct Cloud Supabase fallback (works on 4G/5G/any remote network)
     try {
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -986,6 +1073,64 @@ const realApi={
       ]).finally(() => { if (timeoutTimer) clearTimeout(timeoutTimer); });
 
       const occ = Array.isArray(occRows) && occRows[0] ? occRows[0] : null;
+
+      // 2b. If not in active_occupancies, check for persistent cloud checkout record
+      if (!occ) {
+        const coRes = await fetch(
+          `${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.room_checkout&or=(room_number.ilike.*${encodeURIComponent(cleanId)}*,bill_no.eq.${encodeURIComponent(cleanId)},id.eq.${encodeURIComponent(cleanId)})&order=created_at.desc&limit=1`,
+          { headers: h, signal }
+        ).then(r => r.json()).catch(() => []);
+
+        const coRow = Array.isArray(coRes) && coRes[0] ? coRes[0] : null;
+        if (coRow) {
+          let coMeta: any = {};
+          try { coMeta = JSON.parse(coRow.items_summary || '{}'); } catch {}
+          return {
+            isCheckout: true,
+            status: 'checked_out',
+            stayStatus: 'CHECKED_OUT',
+            room: {
+              id: coMeta.bookingId || coRow.id,
+              room_number: coRow.room_number || coMeta.roomNumber || cleanId,
+              room_type: 'Standard Room',
+              guest_name: coMeta.guestName || 'Guest',
+              mobile: coMeta.mobile || '',
+              adults: coMeta.adults || 1,
+              children: coMeta.children || 0,
+              meal_plan: coMeta.mealPlan || 'without_breakfast',
+              checkin_time: coMeta.checkinTime,
+              actual_checkout_time: coMeta.checkoutTime || coRow.created_at,
+              checked_in_by: coMeta.checkedInBy || 'Front Desk',
+              checked_out_by: coMeta.checkedOutBy || coRow.settled_by || 'Staff',
+              room_count: coMeta.roomCount || 1,
+              room_numbers: coMeta.roomNumber || coRow.room_number,
+              payments: coMeta.payments || []
+            },
+            guestName: coMeta.guestName || 'Guest',
+            guest: coMeta.guestName || 'Guest',
+            mobile: coMeta.mobile || '',
+            adults: coMeta.adults || 1,
+            children: coMeta.children || 0,
+            mealPlan: coMeta.mealPlan || 'without_breakfast',
+            roomCount: coMeta.roomCount || 1,
+            roomNumber: coMeta.roomNumber || coRow.room_number || cleanId,
+            room: coMeta.roomNumber || coRow.room_number || cleanId,
+            checkIn: coMeta.checkinTime,
+            checkOut: coMeta.checkoutTime || coRow.created_at,
+            checkedInBy: coMeta.checkedInBy || 'Front Desk',
+            checkedOutBy: coMeta.checkedOutBy || coRow.settled_by || 'Staff',
+            payments: coMeta.payments || [],
+            restaurantOrders: [],
+            barOrders: [],
+            summary: {
+              grandTotal: Number(coRow.grand_total || coMeta.netSettle || 0),
+              advancePaid: Number(coRow.grand_total || coMeta.netSettle || 0),
+              balanceDue: 0
+            }
+          };
+        }
+      }
+
       const fRow = Array.isArray(folioRows) && folioRows[0] ? folioRows[0] : null;
       let meta: any = {};
       try { meta = JSON.parse(fRow?.items_summary || '{}'); } catch (_) {}
