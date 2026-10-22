@@ -32,8 +32,26 @@ function handleNotificationNavigation(router: any, response: any) {
     console.log('[Push DeepLink] Routing for notification type:', notifType, data);
 
     if (notifType.includes('discount') || notifType.includes('approval')) {
-      // 1. Discount Permission: open Discounts tab (Pending review)
-      router.push('/(tabs)/approvals');
+      // 1. Discount Permission: open Discounts tab with interactive approval popup
+      router.push({
+        pathname: '/(tabs)/approvals',
+        params: {
+          autoOpen: 'true',
+          approval_id: String(data.approval_id || data.id || ''),
+          room_number: String(data.room_number || ''),
+          room_count: String(data.room_count || '1'),
+          guest_name: String(data.guest_name || ''),
+          members: String(data.members || ''),
+          expected_checkout: String(data.expected_checkout || ''),
+          meal_plan: String(data.meal_plan || ''),
+          current_total: String(data.current_total || ''),
+          discount: String(data.discount || ''),
+          discount_pct: String(data.discount_pct || ''),
+          final_amount: String(data.final_amount || ''),
+          requested_by: String(data.requested_by || ''),
+          reason: String(data.reason || '')
+        }
+      });
     } else if (notifType.includes('checkin') || notifType.includes('stay') || title.toLowerCase().includes('check-in')) {
       // 2. Check-In: open the checked-in room directly
       const titleMatch = (title + ' ' + body).match(/Room\s*([0-9A-Za-z]+)/i);

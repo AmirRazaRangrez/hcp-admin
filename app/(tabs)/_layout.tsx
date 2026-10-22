@@ -68,21 +68,22 @@ function GlobalApprovalModal({ badges }: { badges: any }) {
       } catch {}
     };
 
-    if (badges?.approvals > 0) {
-      fetchPending();
-    } else {
-      setPendingItem(null);
-    }
+    fetchPending();
 
     // Realtime WebSocket subscription: Trigger immediately when a discount request is created or updated
+    let timer: any = null;
     const unsub = subscribeRealtimeUpdates((event) => {
       if (event.table === 'room_charges_inbox' || event.table === 'app_wake') {
-        fetchPending();
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (active) fetchPending();
+        }, 1200);
       }
     });
 
     return () => {
       active = false;
+      if (timer) clearTimeout(timer);
       unsub();
     };
   }, [badges?.approvals, dismissedId]);

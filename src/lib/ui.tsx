@@ -134,14 +134,21 @@ export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string,
   // silently update the data immediately!
   useEffect(() => {
     if (!key) return;
+    let timer: any = null;
     const unsub = subscribeRealtimeUpdates((event) => {
       const relevantKeys = TABLE_CACHE_MAP[event.table];
       const affectsUs = !relevantKeys || relevantKeys.some(k => key.startsWith(k) || k.startsWith(key));
       if (affectsUs || event.table === 'app_wake') {
-        run(true); // Silent real-time update: NO indicator popup, instant data freshness!
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          run(true); // Silent real-time update: NO indicator popup, instant data freshness!
+        }, 1200); // 1.2s debounce ensures bursts of table updates only trigger a single fetch
       }
     });
-    return unsub;
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsub();
+    };
   }, [key, run]);
 
   // 5. Optional fallback poll: only if explicitly requested (pollMs > 0)

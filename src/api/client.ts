@@ -214,7 +214,7 @@ async function ownerOr<T>(real: () => Promise<T>, fallback: () => Promise<T>): P
 }
 const num=(x:any)=>Number(x)||0;
 const ts=(s?:string)=>{const t=new Date(String(s||'').replace(' ','T')).getTime();return isNaN(t)?0:t};
-export type Ev={id:string;type:string;tags:string[];title:string;body:string;created_at:string;dept:string;billId?:any;discount?:number;total?:number;guest?:string;room?:string;by?:string};
+export type Ev={id:string;type:string;tags:string[];title:string;body:string;created_at:string;dept:string;billId?:any;discount?:number;total?:number;guest?:string;room?:string;by?:string;meta?:any};
 async function fetchSupabaseOccupied() {
   const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
   const [r, folios] = await Promise.all([
@@ -362,10 +362,12 @@ async function fetchSupabaseDailyAnalytics(startDate: string, endDate: string) {
 
 async function fetchSupabaseApprovals() {
   const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 2500) : null;
   const r = await fetch(
     `${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.discount_approval&order=created_at.desc`,
-    { headers: h }
-  ).then(x => x.json()).catch(() => []);
+    { headers: h, signal: controller?.signal }
+  ).then(x => x.json()).catch(() => []).finally(() => { timer && clearTimeout(timer); });
 
   if (!Array.isArray(r)) return { pending: [], history: [] };
 
@@ -1036,7 +1038,6 @@ const realApi={
           mealPlan: rec.meal_plan || 'without_breakfast',
           roomCount: roomList.length,
           roomNumber: roomList.join(', '),
-          room: roomList.join(', '),
           checkIn: rec.checkin_time,
           checkOut: rec.actual_checkout_time || rec.checkout_time || new Date().toISOString(),
           checkedInBy: rec.checked_in_by || 'Front Desk',
@@ -1114,7 +1115,6 @@ const realApi={
             mealPlan: coMeta.mealPlan || 'without_breakfast',
             roomCount: coMeta.roomCount || 1,
             roomNumber: coMeta.roomNumber || coRow.room_number || cleanId,
-            room: coMeta.roomNumber || coRow.room_number || cleanId,
             checkIn: coMeta.checkinTime,
             checkOut: coMeta.checkoutTime || coRow.created_at,
             checkedInBy: coMeta.checkedInBy || 'Front Desk',

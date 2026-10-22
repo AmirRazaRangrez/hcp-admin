@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, Alert, Pressable, StyleSheet } from 'react-native';
-import { useRouter } from 'expo-router';
+import { View, Text, Alert, Pressable, StyleSheet, Modal } from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { api, errMsg } from '../../src/api/client';
 import { Screen, Card, Btn, Badge, useLoad } from '../../src/lib/ui';
 import { c, money, when } from '../../src/lib/theme';
@@ -21,9 +21,12 @@ const DetailRow = ({ label, value, bold, color }: any) => {
 
 export default function Approvals() {
   const router = useRouter();
+  const params = useLocalSearchParams<any>();
   // 2 SUB-TABS: 'pending' (Pending Approvals) vs 'history' (Approved History)
   const [subTab, setSubTab] = useState<'pending' | 'history'>('pending');
   const [activeId, setActiveId] = useState<any>(null);
+  const [popupItem, setPopupItem] = useState<any>(null);
+  const [actingModal, setActingModal] = useState(false);
 
   const { data, err, busy, isRefreshing, at, reload } = useLoad(() => api.approvals(), [], 'approvals');
 
@@ -39,6 +42,34 @@ export default function Approvals() {
   useEffect(() => {
     useAuth.getState().setBadges({ approvals: pendingList.length });
   }, [pendingList.length]);
+
+  // AUTO-POPUP ON NOTIFICATION CLICK:
+  // When opened via discount notification (autoOpen='true' or approval_id present),
+  // immediately show the interactive approval modal popup so admin can approve or reject in 1 tap!
+  useEffect(() => {
+    if (params?.autoOpen === 'true' || params?.approval_id) {
+      const match = pendingList.find((x: any) => String(x.id) === String(params.approval_id));
+      if (match) {
+        setPopupItem(match);
+      } else if (params.approval_id || params.discount) {
+        setPopupItem({
+          id: params.approval_id,
+          room_number: params.room_number || '',
+          room_count: Number(params.room_count) || 1,
+          guest_name: params.guest_name || '',
+          members: params.members || '',
+          expected_checkout: params.expected_checkout || '',
+          meal_plan: params.meal_plan || '',
+          current_total: Number(params.current_total) || 0,
+          discount: Number(params.discount) || 0,
+          discount_pct: Number(params.discount_pct) || 0,
+          final_amount: Number(params.final_amount) || 0,
+          requested_by: params.requested_by || 'Front Desk',
+          reason: params.reason || ''
+        });
+      }
+    }
+  }, [params?.autoOpen, params?.approval_id, pendingList.length]);
 
   const handleAction = (item: any, kind: 'approve' | 'reject') => {
     Alert.alert(
@@ -67,6 +98,26 @@ export default function Approvals() {
         }
       ]
     );
+  };
+
+  const handleModalAction = async (kind: 'approve' | 'reject') => {
+    if (!popupItem) return;
+    setActingModal(true);
+    try {
+      if (kind === 'approve') {
+        await api.approve(popupItem.id);
+        Alert.alert('✓ Discount Approved', `Approved ${popupItem.discount_pct ? popupItem.discount_pct + '% ' : ''}discount for Room ${popupItem.room_number || ''}.`);
+      } else {
+        await api.reject(popupItem.id);
+        Alert.alert('Discount Rejected', `Discount request rejected for Room ${popupItem.room_number || ''}.`);
+      }
+      setPopupItem(null);
+      await reload();
+    } catch (e: any) {
+      Alert.alert('Action Failed', errMsg(e));
+    } finally {
+      setActingModal(false);
+    }
   };
 
   return (
@@ -288,6 +339,139 @@ export default function Approvals() {
           })}
         </>
       )}
+
+      {/* Interactive Approval Popup when opened via push notification or tap */}
+      {popupItem && (
+        <Modal
+          transparent
+          animationType="fade"
+          visible={!!popupItem}
+          onRequestClose={() => setPopupItem(null)}
+        >
+          <View style={modalStyles.backdrop}>
+            <View style={modalStyles.modalCard}>
+              {/* Header */}
+              <View style={modalStyles.modalHeader}>
+                <View style={modalStyles.headerTitleBox}>
+                  <Text style={modalStyles.headerBadge}>⚡ DISCOUNT APPROVAL REQUEST</Text>
+                  <Text style={modalStyles.headerTitle}>
+                    {popupItem.room_number
+                      ? (popupItem.room_number.startsWith('Room') ? popupItem.room_number : ((popupItem.room_count && popupItem.room_count > 1) || popupItem.room_number.includes(',') ? `Rooms ${popupItem.room_number}` : `Room ${popupItem.room_number}`))
+                      : `Bill #${popupItem.bill_number || popupItem.id}`}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => setPopupItem(null)}
+                  hitSlop={12}
+                  style={modalStyles.closeBtn}
+                >
+                  <Text style={modalStyles.closeBtnText}>✕</Text>
+                </Pressable>
+              </View>
+
+              {/* Body */}
+              <View style={modalStyles.modalBody}>
+                {popupItem.guest_name ? (
+                  <View style={modalStyles.row}>
+                    <Text style={modalStyles.label}>Guest Name</Text>
+                    <Text style={modalStyles.valBold}>{popupItem.guest_name}</Text>
+                  </View>
+                ) : null}
+
+                {popupItem.members ? (
+                  <View style={modalStyles.row}>
+                    <Text style={modalStyles.label}>Guest Members</Text>
+                    <Text style={modalStyles.valBold}>{popupItem.members}</Text>
+                  </View>
+                ) : null}
+
+                {popupItem.expected_checkout ? (
+                  <View style={modalStyles.row}>
+                    <Text style={modalStyles.label}>Expected Checkout</Text>
+                    <Text style={[modalStyles.valBold, { color: '#8c5d77' }]}>
+                      {popupItem.expected_checkout}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {popupItem.meal_plan ? (
+                  <View style={modalStyles.row}>
+                    <Text style={modalStyles.label}>Meal Plan</Text>
+                    <Text style={[modalStyles.valBold, { color: '#059669' }]}>
+                      {popupItem.meal_plan}
+                    </Text>
+                  </View>
+                ) : null}
+
+                <View style={modalStyles.row}>
+                  <Text style={modalStyles.label}>Total Tariff</Text>
+                  <Text style={modalStyles.val}>{money(popupItem.current_total)}</Text>
+                </View>
+
+                <View style={[modalStyles.row, modalStyles.highlightRow]}>
+                  <Text style={[modalStyles.label, { color: '#B45309', fontWeight: '700' }]}>
+                    Permission Discount
+                  </Text>
+                  <Text style={modalStyles.valDiscount}>
+                    {popupItem.discount_pct}% (− {money(popupItem.discount)})
+                  </Text>
+                </View>
+
+                <View style={[modalStyles.row, { borderBottomWidth: 0, paddingTop: 6 }]}>
+                  <Text style={[modalStyles.label, { fontWeight: '800', color: '#8c5d77' }]}>
+                    Net Payable
+                  </Text>
+                  <Text style={modalStyles.valNet}>
+                    {money(popupItem.final_amount)}
+                  </Text>
+                </View>
+
+                {popupItem.requested_by ? (
+                  <View style={modalStyles.row}>
+                    <Text style={modalStyles.label}>Raised By</Text>
+                    <Text style={modalStyles.valBold}>{popupItem.requested_by}</Text>
+                  </View>
+                ) : null}
+
+                {popupItem.reason ? (
+                  <View style={modalStyles.reasonBox}>
+                    <Text style={modalStyles.reasonText}>{popupItem.reason}</Text>
+                  </View>
+                ) : null}
+              </View>
+
+              {/* Action Buttons: Approve / Reject */}
+              <View style={modalStyles.btnRow}>
+                <Pressable
+                  disabled={actingModal}
+                  onPress={() => handleModalAction('reject')}
+                  style={({ pressed }) => [
+                    modalStyles.actionBtn,
+                    modalStyles.rejectBtn,
+                    pressed && { opacity: 0.85 }
+                  ]}
+                >
+                  <Text style={modalStyles.rejectText}>✕ Reject</Text>
+                </Pressable>
+
+                <Pressable
+                  disabled={actingModal}
+                  onPress={() => handleModalAction('approve')}
+                  style={({ pressed }) => [
+                    modalStyles.actionBtn,
+                    modalStyles.approveBtn,
+                    pressed && { opacity: 0.85 }
+                  ]}
+                >
+                  <Text style={modalStyles.approveText}>
+                    {actingModal ? 'Processing...' : `✓ Approve ${popupItem.discount_pct ? popupItem.discount_pct + '% ' : ''}Discount`}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
     </Screen>
   );
 }
@@ -476,5 +660,154 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: c.brass,
     fontWeight: '700'
+  }
+});
+
+const modalStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.72)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 18,
+    zIndex: 99999
+  },
+  modalCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    width: '100%',
+    maxWidth: 420,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 18,
+    elevation: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0'
+  },
+  modalHeader: {
+    backgroundColor: '#8c5d77',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  headerTitleBox: {
+    flex: 1
+  },
+  headerBadge: {
+    color: '#FBBF24',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    marginBottom: 2
+  },
+  headerTitle: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '800'
+  },
+  closeBtn: {
+    padding: 6
+  },
+  closeBtnText: {
+    color: '#94A3B8',
+    fontSize: 16,
+    fontWeight: '700'
+  },
+  modalBody: {
+    padding: 16
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9'
+  },
+  highlightRow: {
+    backgroundColor: '#FFFBEB',
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    marginVertical: 4,
+    borderBottomWidth: 0
+  },
+  label: {
+    fontSize: 12.5,
+    color: '#64748B',
+    fontWeight: '600',
+    flex: 1,
+    marginRight: 6
+  },
+  val: {
+    fontSize: 13,
+    color: '#334155',
+    fontWeight: '700'
+  },
+  valBold: {
+    fontSize: 13,
+    color: '#0F172A',
+    fontWeight: '800',
+    textAlign: 'right',
+    flexShrink: 1
+  },
+  valDiscount: {
+    fontSize: 13.5,
+    color: '#B45309',
+    fontWeight: '800'
+  },
+  valNet: {
+    fontSize: 15,
+    color: '#2563EB',
+    fontWeight: '900'
+  },
+  reasonBox: {
+    marginTop: 8,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0'
+  },
+  reasonText: {
+    fontSize: 11.5,
+    color: '#64748B',
+    fontStyle: 'italic'
+  },
+  btnRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 10
+  },
+  actionBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  rejectBtn: {
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FECACA'
+  },
+  rejectText: {
+    color: '#DC2626',
+    fontWeight: '800',
+    fontSize: 14
+  },
+  approveBtn: {
+    backgroundColor: '#10B981',
+    borderWidth: 1,
+    borderColor: '#059669'
+  },
+  approveText: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+    fontSize: 14
   }
 });
