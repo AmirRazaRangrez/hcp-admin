@@ -15,7 +15,7 @@ import {
 import { useLocalSearchParams } from 'expo-router';
 import { api } from '../../src/api/client';
 import { Screen, Card, Badge, useLoad } from '../../src/lib/ui';
-import { c, money, when } from '../../src/lib/theme';
+import { c, money, when, formatIST } from '../../src/lib/theme';
 import {
   UsersIcon,
   DocumentIcon,
@@ -80,37 +80,15 @@ export default function StoreScreen() {
     }
   }, [params.filterStatus]);
 
-  // Helper to format date and time
+  // Helper to format date and time in Indian Standard Time (IST)
   const formatDateTime = (dateStr: string) => {
     if (!dateStr) return 'N/A';
-    try {
-      const d = new Date(dateStr);
-      if (isNaN(d.getTime())) return dateStr;
-      const day = d.getDate().toString().padStart(2, '0');
-      const month = (d.getMonth() + 1).toString().padStart(2, '0');
-      const year = d.getFullYear();
-      let hours = d.getHours();
-      const minutes = d.getMinutes().toString().padStart(2, '0');
-      const ampm = hours >= 12 ? 'PM' : 'AM';
-      hours = hours % 12;
-      hours = hours ? hours : 12;
-      return `${day}/${month}/${year} at ${hours}:${minutes} ${ampm}`;
-    } catch (_) {
-      return dateStr;
-    }
+    return formatIST(dateStr, { withYear: true, fallback: dateStr });
   };
 
   const formatDateOnly = (dateStr: string) => {
     if (!dateStr) return 'N/A';
-    try {
-      const parts = String(dateStr).split('T')[0].split('-');
-      if (parts.length === 3) {
-        return `${parts[2]}/${parts[1]}/${parts[0]}`;
-      }
-      return dateStr;
-    } catch (_) {
-      return dateStr;
-    }
+    return formatIST(dateStr, { dateOnly: true, withYear: true, fallback: dateStr });
   };
 
   // Helper to safely format bill numbers: Bill #29 -> Bill:29

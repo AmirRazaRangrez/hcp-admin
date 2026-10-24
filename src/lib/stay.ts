@@ -72,13 +72,24 @@ export const toStay = (b: any): Stay => {
 
   const totalAdults = n(b.adults_male) + n(b.adults_female) + n(b.adults_other) || n(b.adults) || 1;
 
+  const checkIn = b.checkin_time;
+  let approxCheckOut = b.approx_checkout_time || b.expected_checkout_time || '';
+  if (!approxCheckOut && checkIn) {
+    try {
+      const dIn = new Date(String(checkIn).includes('T') ? checkIn : String(checkIn).replace(' ', 'T') + '+05:30').getTime();
+      if (!isNaN(dIn)) {
+        approxCheckOut = new Date(dIn + 24 * 60 * 60 * 1000).toISOString();
+      }
+    } catch (_) {}
+  }
+
   return {
     id: String(b.id ?? b.booking_id),
     room: String(b.room_number || (b.rooms || []).join(', ') || '-'),
     guest: b.guest_name || b.name || 'Guest',
-    checkIn: b.checkin_time,
-    checkOut: b.actual_checkout_time || b.checkout_time,
-    approxCheckOut: b.approx_checkout_time,
+    checkIn: checkIn,
+    checkOut: b.actual_checkout_time || b.checkout_time || approxCheckOut || '',
+    approxCheckOut: approxCheckOut || b.actual_checkout_time || b.checkout_time || '',
     roomCharge,
     restaurant,
     bar,

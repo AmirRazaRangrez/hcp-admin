@@ -281,13 +281,13 @@ export default function Home() {
           l="Check-ins Today"
           v={cin}
           icon={<CheckinIcon size={14} color="#16A34A" />}
-          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkin' } })}
+          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkin', today: 'true' } })}
         />
         <Tile
           l="Check-outs Today"
           v={cout}
           icon={<CheckoutIcon size={14} color="#EA580C" />}
-          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkout' } })}
+          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkout', today: 'true' } })}
         />
 
         {/* Row 5: Discounts Today & Occupancy Rate */}
@@ -302,7 +302,12 @@ export default function Home() {
           highlight
           icon={<OccupiedRoomsIcon size={14} color="#B8893B" />}
         />
-        <Tile l="Available Rooms" v={r?.ready} icon={<AvailableRoomsIcon size={14} color="#10B981" />} />
+        <Tile
+          go={() => nav.push('/available')}
+          l="Available Rooms"
+          v={r?.ready}
+          icon={<AvailableRoomsIcon size={14} color="#10B981" />}
+        />
       </View>
     </Screen>
   );

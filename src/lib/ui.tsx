@@ -36,6 +36,13 @@ export async function hydrateMemCache() {
 // Trigger hydration right away at module load time
 hydrateMemCache().catch(() => {});
 
+export function clearCache(key: string) {
+  try {
+    memCache.delete(key);
+    AsyncStorage.removeItem('c:' + key).catch(() => {});
+  } catch (_) {}
+}
+
 export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string, pollMs: number = 0) {
   const initialCache = key ? memCache.get(key) : undefined;
   const [data, set] = useState<T | null>(initialCache ? initialCache.d : null);
@@ -374,20 +381,26 @@ export const Card = ({ children, style, onPress }: any) => {
 };
 
 export const Badge = ({ text, color }: { text: string; color: string }) => (
-  <Text style={{
-    color,
+  <View style={{
+    alignSelf: 'flex-start',
     borderColor: color,
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 6,
     paddingHorizontal: 8,
-    paddingVertical: 3,
-    fontSize: 11,
-    fontWeight: '700',
-    overflow: 'hidden',
-    backgroundColor: color + '15'
+    paddingVertical: 2,
+    backgroundColor: color + '15',
+    justifyContent: 'center',
+    alignItems: 'center'
   }}>
-    {text}
-  </Text>
+    <Text style={{
+      color,
+      fontSize: 11,
+      fontWeight: '800',
+      letterSpacing: 0.4
+    }}>
+      {text}
+    </Text>
+  </View>
 );
 
 export const Btn = ({ label, onPress, kind = 'ink', disabled }: any) => (

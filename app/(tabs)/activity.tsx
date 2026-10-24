@@ -87,17 +87,33 @@ function formatActivityBody(raw: string): string {
 
 export default function Activity() {
   const router = useRouter();
-  const searchParams = useLocalSearchParams<{ filter?: string }>();
+  const searchParams = useLocalSearchParams<{ filter?: string; today?: string }>();
   const [filter, setFilter] = useState(searchParams.filter || 'all');
+  const [todayOnly, setTodayOnly] = useState(searchParams.today === 'true' || searchParams.today === '1');
 
   useEffect(() => {
     if (searchParams.filter) {
       setFilter(searchParams.filter);
     }
-  }, [searchParams.filter]);
+    if (searchParams.today !== undefined) {
+      setTodayOnly(searchParams.today === 'true' || searchParams.today === '1');
+    }
+  }, [searchParams.filter, searchParams.today]);
 
   const { data, err, busy, isRefreshing, at, reload } = useLoad(() => api.activity(filter), [filter], 'activity:' + filter);
-  const items = data || [];
+  const rawItems = data || [];
+
+  const items = todayOnly
+    ? rawItems.filter((a: any) => {
+        try {
+          const d = new Date(a.created_at || 0);
+          const now = new Date();
+          return d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+        } catch (_) {
+          return true;
+        }
+      })
+    : rawItems;
 
   return (
     <Screen
@@ -142,14 +158,37 @@ export default function Activity() {
         </ScrollView>
       </View>
 
+      {/* Date Filter Status Badge */}
+      {todayOnly ? (
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FEF3C7', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, marginBottom: 12, borderWidth: 1, borderColor: '#FDE68A' }}>
+          <Text style={{ fontSize: 12, fontWeight: '750', color: '#B45309' }}>
+            📅 Showing Today's {filter === 'checkin' ? 'Check-ins' : (filter === 'checkout' ? 'Check-outs' : 'Activity')} Only
+          </Text>
+          <Pressable onPress={() => setTodayOnly(false)}>
+            <Text style={{ fontSize: 12, fontWeight: '800', color: '#0284C7' }}>Show All 7 Days →</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       {/* Empty State */}
       {items.length === 0 && !busy ? (
         <Card style={styles.emptyCard}>
           <View style={{ alignItems: 'center', marginBottom: 8 }}>
             <EmptyInboxIcon size={44} color="#94A3B8" />
           </View>
-          <Text style={styles.emptyTitle}>No Activity Found</Text>
-          <Text style={styles.emptySub}>No events recorded in the last 7 days for this filter.</Text>
+          <Text style={styles.emptyTitle}>
+            {todayOnly ? 'No Activity Recorded Today' : 'No Activity Found'}
+          </Text>
+          <Text style={styles.emptySub}>
+            {todayOnly
+              ? `No ${filter === 'checkin' ? 'check-ins' : (filter === 'checkout' ? 'check-outs' : 'events')} recorded today so far.`
+              : 'No events recorded in the last 7 days for this filter.'}
+          </Text>
+          {todayOnly ? (
+            <Pressable onPress={() => setTodayOnly(false)} style={{ marginTop: 10, paddingVertical: 6, paddingHorizontal: 12, backgroundColor: '#F1F5F9', borderRadius: 8 }}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#0F2A2E' }}>View Earlier 7-Day Activity</Text>
+            </Pressable>
+          ) : null}
         </Card>
       ) : null}
 

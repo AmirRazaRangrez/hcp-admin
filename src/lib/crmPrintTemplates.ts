@@ -11,13 +11,36 @@ export function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
+const SHORT_MONTHS_PRINT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 export function formatDateTime(dateInput) {
   if (!dateInput) return '';
-  const d = new Date(dateInput);
-  if (isNaN(d.getTime())) return '';
-  const dateStr = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-  const timeStr = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
-  return `${dateStr}, ${timeStr}`;
+  const raw = String(dateInput).trim();
+  if (!raw || raw === 'null' || raw === 'undefined') return '';
+
+  let epochMs = NaN;
+  if (raw.includes('+') || raw.endsWith('Z') || raw.endsWith('z') || /[-+]\d{2}:\d{2}$/.test(raw)) {
+    epochMs = new Date(raw).getTime();
+  } else if (/^\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}/.test(raw)) {
+    epochMs = new Date(raw + '+05:30').getTime();
+  } else if (/^\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}/.test(raw)) {
+    epochMs = new Date(raw.replace(' ', 'T') + 'Z').getTime();
+  } else {
+    epochMs = new Date(raw).getTime();
+  }
+  if (isNaN(epochMs)) return raw;
+
+  const d = new Date(epochMs + 19800000);
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const month = SHORT_MONTHS_PRINT[d.getUTCMonth()];
+  const year = d.getUTCFullYear();
+  let h = d.getUTCHours();
+  const m = String(d.getUTCMinutes()).padStart(2, '0');
+  const ampm = h >= 12 ? 'pm' : 'am';
+  h = h % 12;
+  if (h === 0) h = 12;
+  const hStr = String(h).padStart(2, '0');
+  return `${day} ${month} ${year}, ${hStr}:${m} ${ampm}`;
 }
 
 export function formatCurrency(amount) {
@@ -79,24 +102,7 @@ export function buildGuestRegistrationHTML(data, options = { includePhotos: fals
 
   const includePhotos = Boolean(options?.includePhotos);
 
-  const formatDT = (dt) => {
-    if (!dt) return '-';
-    try {
-      const d = new Date(dt);
-      if (isNaN(d.getTime())) return String(dt);
-      return d.toLocaleDateString('en-IN', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      }) + ' ' + d.toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      });
-    } catch (e) {
-      return String(dt);
-    }
-  };
+  const formatDT = (dt) => formatDateTime(dt) || '-';
 
   const calculateAge = (dobStr) => {
     if (!dobStr) return '';
@@ -1605,11 +1611,9 @@ export function buildGuestActivitiesSummaryHTML(data) {
   const guestName = data.guest_name || data.guestName || r.guest_name || 'Guest';
   const mobile = data.mobile || data.phone || r.guest_phone || r.mobile || '-';
   const roomNo = data.room_numbers || data.room_number || r.room_number || '-';
-  const roomType = data.room_type || r.room_type || 'Deluxe Room';
-  const checkinTime = (data.checkin_time || data.checkinTime || r.checkin_time) ? new Date(data.checkin_time || data.checkinTime || r.checkin_time).toLocaleString('en-IN', { hour12: true }) : '-';
-  const checkoutTime = (data.checkout_time || data.checkoutTime || data.actual_checkout_time || data.actualCheckoutTime || data.approx_checkout_time || data.approxCheckoutTime || r.checkout_time || r.approx_checkout_time)
-    ? new Date(data.checkout_time || data.checkoutTime || data.actual_checkout_time || data.actualCheckoutTime || data.approx_checkout_time || data.approxCheckoutTime || r.checkout_time || r.approx_checkout_time).toLocaleString('en-IN', { hour12: true })
-    : '-';
+  const checkinTime = (data.checkin_time || data.checkinTime || r.checkin_time) ? formatDateTime(data.checkin_time || data.checkinTime || r.checkin_time) : '-';
+  const rawCheckout = data.checkout_time || data.checkoutTime || data.actual_checkout_time || data.actualCheckoutTime || data.approx_checkout_time || data.approxCheckoutTime || r.checkout_time || r.approx_checkout_time;
+  const checkoutTime = rawCheckout ? formatDateTime(rawCheckout) : '-';
   const source = data.booking_source || data.source || r.booking_source || 'Walk-in';
 
   // Hospitality / Room Charges
@@ -1750,7 +1754,7 @@ export function buildGuestActivitiesSummaryHTML(data) {
               ${payments.length > 0 ? payments.map((p) => `
                 <tr>
                   <td style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0; font-weight: 800;">${escapeHtml(p.receipt_no || `REC-${p.id}`)}</td>
-                  <td style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0;">${p.created_at ? new Date(p.created_at).toLocaleString('en-IN', { hour12: true }) : '-'}</td>
+                  <td style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0;">${p.created_at ? formatDateTime(p.created_at) : '-'}</td>
                   <td style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0; text-transform: uppercase;">
                     ${escapeHtml(p.payment_mode || 'Cash')}${p.utr_number ? ` (UTR: ${p.utr_number})` : ''}
                   </td>
@@ -1803,7 +1807,7 @@ export function buildGuestActivitiesSummaryHTML(data) {
                     return `
                       <tr>
                         <td style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0; font-weight: 750;">#${ord.id || ord.order_number || '-'}</td>
-                        <td style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0;">${ord.dept} • ${ord.created_at ? new Date(ord.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : '-'}</td>
+                        <td style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0;">${ord.dept} • ${ord.created_at ? formatDateTime(ord.created_at) : '-'}</td>
                         <td style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0; font-size: 7.8pt;">
                           ${escapeHtml(itemsStr || 'F&B Items')}<br>
                           <span style="font-weight: 800; color: ${isPaid ? '#166534' : '#b91c1c'};">${isPaid ? '✓ Paid at POS' : '⏳ Added to Room Voucher'}</span>

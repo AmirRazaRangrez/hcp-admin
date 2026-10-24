@@ -1,7 +1,8 @@
 // All CRM access goes through here. EXISTING = routes found in the CRM audit (response shapes
 // are normalised defensively; they were not verified). OWNER = routes that do NOT exist in the
 // CRM yet; screens show a "not connected" state until they are added server-side.
-import axios from 'axios';import AsyncStorage from '@react-native-async-storage/async-storage';import {Platform} from 'react-native';import {useAuth} from '../store/auth';import {money} from '../lib/theme';import {DEMO_MODE,CLOUD_TUNNEL_URL} from '../config';import {makeDemoApi} from './demo';import {isInHouse,toStay} from '../lib/stay';
+import axios from 'axios';import AsyncStorage from '@react-native-async-storage/async-storage';import {Platform} from 'react-native';import {useAuth} from '../store/auth';import {money, cleanRoomNumber} from '../lib/theme';import {DEMO_MODE,CLOUD_TUNNEL_URL} from '../config';import {makeDemoApi} from './demo';import {isInHouse,toStay} from '../lib/stay';
+export { cleanRoomNumber };
 // ---- CRM safety: every path the app may touch. ROOM_BILLS = /hospitality/history (exists in the CRM; returns bookings, filtered below to checked-out stays). ----
 export const ROUTES={login:'/api/auth/login',stats:'/stats',analytics:'/manager/analytics',restaurantBills:'/restaurant/settled-bills',barBills:'/bar/settled-bills',
  restaurantOrder:'/restaurant/orders/',barOrder:'/bar/orders/',ROOM_BILLS:'/hospitality/history'};
@@ -212,8 +213,21 @@ async function ownerOr<T>(real: () => Promise<T>, fallback: () => Promise<T>): P
     return fallback();
   }
 }
-const num=(x:any)=>Number(x)||0;
-const ts=(s?:string)=>{const t=new Date(String(s||'').replace(' ','T')).getTime();return isNaN(t)?0:t};
+const ts = (s?: string) => {
+  if (!s) return 0;
+  const raw = String(s).trim();
+  let t = NaN;
+  if (raw.includes('+') || raw.endsWith('Z') || raw.endsWith('z') || /[-+]\d{2}:\d{2}$/.test(raw)) {
+    t = new Date(raw).getTime();
+  } else if (/^\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}/.test(raw)) {
+    t = new Date(raw + '+05:30').getTime();
+  } else if (/^\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}/.test(raw)) {
+    t = new Date(raw.replace(' ', 'T') + 'Z').getTime();
+  } else {
+    t = new Date(raw.replace(' ', 'T')).getTime();
+  }
+  return isNaN(t) ? 0 : t;
+};
 export type Ev={id:string;type:string;tags:string[];title:string;body:string;created_at:string;dept:string;billId?:any;discount?:number;total?:number;guest?:string;room?:string;by?:string;meta?:any};
 async function fetchSupabaseOccupied() {
   const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
@@ -227,15 +241,18 @@ async function fetchSupabaseOccupied() {
     folios.forEach((f: any) => {
       let meta: any = {};
       try { meta = JSON.parse(f.items_summary || '{}'); } catch (_) {}
+      const cleanNum = cleanRoomNumber(f.room_number);
+      folioMap.set(cleanNum, { ...f, meta });
       folioMap.set(String(f.room_number).trim(), { ...f, meta });
     });
   }
 
   if (Array.isArray(r) && r.length > 0) {
     return r.map((o: any) => {
-      const roomNum = String(o.room_number).trim();
-      const folioData = folioMap.get(roomNum);
+      const roomNum = cleanRoomNumber(o.room_number);
+      const folioData = folioMap.get(roomNum) || folioMap.get(String(o.room_number).trim());
       const meta = folioData?.meta || {};
+      const sc = meta.stayCalcNow || meta.stayCalcDeclared || null;
 
       // Standard base rate by room type if not yet recorded
       const rType = String(o.room_type || '').toLowerCase();
@@ -248,20 +265,23 @@ async function fetchSupabaseOccupied() {
         stayNights = Math.max(1, Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
       } catch (_) {}
 
-      const roomCharge = Number(meta.roomCharge || folioData?.subtotal || o.room_charge || o.total_room_charge || (baseDailyRate * stayNights));
-      const tax = Number(folioData?.gst || meta.tax || Math.round(roomCharge * 0.05));
-      const foodTotal = Number(meta.foodTotal || meta.restaurant || o.food_total || 0);
+      const roomCharge = Number(meta.roomCharge ?? o.total_room_charge ?? o.room_charge ?? folioData?.subtotal ?? sc?.roomCharge ?? (baseDailyRate * stayNights));
+      const tax = Number(meta.tax ?? folioData?.gst ?? sc?.roomGst ?? Math.round(roomCharge * 0.05));
+      const foodTotal = Number(meta.foodTotal ?? meta.restaurant ?? o.food_total ?? sc?.fnbTotal ?? 0);
       const barTotal = Number(meta.barTotal || meta.bar || o.bar_total || 0);
       const extra = Number(meta.extra || 0);
-      const discount = Number(meta.discount || o.discount_amount || 0);
+      const discount = Number(meta.discount ?? o.discount_amount ?? sc?.discountAmount ?? 0);
 
-      const tot = Number(meta.total || meta.grandTotal || folioData?.grand_total || (roomCharge + foodTotal + barTotal + extra));
-      const pd = Number(meta.paid || (folioData?.status === 'settled' ? tot : 0) || o.paid || o.advance_payment || o.total_paid || tot);
-      const pending = Math.max(0, tot - pd);
+      const tot = Number(meta.grandTotal ?? meta.total ?? folioData?.grand_total ?? o.total_room_charge ?? sc?.grandTotal ?? (roomCharge + foodTotal + barTotal + extra));
+      const pd = Number(meta.paid ?? (folioData?.status === 'settled' ? tot : 0) ?? o.advance_payment ?? o.total_paid ?? o.paid ?? sc?.paid ?? tot);
+      const refundDue = Number(sc?.refundDue ?? Math.max(0, pd - tot));
+      const pending = Number(meta.pending ?? (tot > pd ? tot - pd : 0) ?? sc?.balanceDue ?? 0);
 
       return {
-        id: String(o.booking_id || o.room_number),
-        room: String(o.room_number),
+        id: String(o.booking_id || roomNum),
+        room: roomNum,
+        room_number: roomNum,
+        refundDue,
         guest: o.guest_name || meta.guestName || 'In-House Guest',
         mobile: o.guest_mobile || meta.mobile || '',
         email: meta.email || o.guest_email || o.email || '',
@@ -276,7 +296,62 @@ async function fetchSupabaseOccupied() {
         type: o.room_type || 'Standard',
         roomType: o.room_type || meta.roomType || 'Standard Room',
         checkIn: o.checkin_time || meta.checkinTime,
-        approxCheckOut: meta.approxCheckout || '',
+        approxCheckOut: (() => {
+          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
+          if (!exp && (o.checkin_time || meta.checkinTime)) {
+            try {
+              const ct = o.checkin_time || meta.checkinTime;
+              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
+              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+            } catch (_) {}
+          }
+          return exp;
+        })(),
+        checkOut: (() => {
+          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
+          if (!exp && (o.checkin_time || meta.checkinTime)) {
+            try {
+              const ct = o.checkin_time || meta.checkinTime;
+              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
+              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+            } catch (_) {}
+          }
+          return exp;
+        })(),
+        approx_checkout_time: (() => {
+          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
+          if (!exp && (o.checkin_time || meta.checkinTime)) {
+            try {
+              const ct = o.checkin_time || meta.checkinTime;
+              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
+              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+            } catch (_) {}
+          }
+          return exp;
+        })(),
+        expectedCheckout: (() => {
+          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
+          if (!exp && (o.checkin_time || meta.checkinTime)) {
+            try {
+              const ct = o.checkin_time || meta.checkinTime;
+              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
+              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+            } catch (_) {}
+          }
+          return exp;
+        })(),
+        checkoutTime: (() => {
+          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
+          if (!exp && (o.checkin_time || meta.checkinTime)) {
+            try {
+              const ct = o.checkin_time || meta.checkinTime;
+              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
+              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+            } catch (_) {}
+          }
+          return exp;
+        })(),
+        stayDuration: meta.stayCalcNow?.stayDurationStr || '',
         total: tot,
         paid: pd,
         pending: pending,
@@ -295,6 +370,68 @@ async function fetchSupabaseOccupied() {
     });
   }
   return [];
+}
+
+async function fetchSupabaseAvailable() {
+  try {
+    const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+    const [occ, checkouts] = await Promise.all([
+      fetchSupabaseOccupied().catch(() => []),
+      fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.room_checkout&select=*&order=created_at.desc&limit=100`, { headers: h }).then(r => r.json()).catch(() => [])
+    ]);
+
+    const occSet = new Set((occ || []).map((o: any) => cleanRoomNumber(o.room || o.room_number)));
+    
+    // Complete 40-room hotel directory
+    const ALL_ROOMS = [
+      '101', '102', '103', '104',
+      '201', '202', '203', '204', '205', '206', '207', '208', '209', '210', '211', '212',
+      '301', '302', '303', '304', '305', '306', '307', '308', '309', '310',
+      '401', '402', '403', '404', '405', '406', '407', '408', '409',
+      '501', '502', '503', '504', '505', '506'
+    ];
+
+    const checkoutMap = new Map();
+    if (Array.isArray(checkouts)) {
+      checkouts.forEach((c: any) => {
+        const rm = cleanRoomNumber(c.room_number);
+        if (!checkoutMap.has(rm)) {
+          let meta: any = {};
+          try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
+          checkoutMap.set(rm, {
+            bookingId: meta.bookingId || c.bill_no,
+            guestName: meta.guestName || meta.guest_name || 'Valued Guest',
+            mobile: meta.mobile || '',
+            checkoutTime: meta.checkoutTime || c.created_at,
+            totalPaid: Number(c.grand_total || meta.netSettle || 0),
+            totalRoomCharge: Number(c.subtotal || 0),
+            paymentMode: meta.payments?.[0]?.mode || 'Cash',
+            voucherNumber: c.bill_no,
+            checkedOutBy: c.settled_by || 'Staff',
+            payments: meta.payments || []
+          });
+        }
+      });
+    }
+
+    return ALL_ROOMS
+      .filter(rm => !occSet.has(rm))
+      .map(rm => {
+        const num = parseInt(rm, 10);
+        const roomType = num >= 500 ? 'Penthouse / Suite' : (num >= 400 ? 'Executive Room' : (num >= 300 ? 'Deluxe Room' : 'Standard Room'));
+        return {
+          id: rm,
+          room: rm,
+          room_number: rm,
+          room_type: roomType,
+          status: 'ready',
+          lastStay: checkoutMap.get(rm) || null
+        };
+      });
+  } catch (e) {
+    console.warn('[Supabase Available] fetch error:', e);
+    return [];
+  }
 }
 
 async function fetchSupabaseDailyAnalytics(startDate: string, endDate: string) {
@@ -442,17 +579,18 @@ async function fetchSupabaseActivity(): Promise<Ev[]> {
   // 1. Live Occupied Rooms Check-ins
   if (occRes.status === 'fulfilled' && Array.isArray(occRes.value)) {
     occRes.value.forEach((o: any) => {
+      const roomNum = cleanRoomNumber(o.room_number);
       out.push({
-        id: `in:${o.room_number}`,
+        id: `in:${roomNum}`,
         type: 'checkin',
         tags: ['checkin', 'stay', 'all'],
         dept: 'Room',
         billId: undefined,
-        title: `Check-in · Room ${o.room_number}`,
+        title: `Check-in · Room ${roomNum}`,
         body: `${o.guest_name || 'Guest'} · ${o.room_type || 'Standard'}`,
         created_at: o.checkin_time || o.updated_at || new Date().toISOString(),
         guest: o.guest_name,
-        room: String(o.room_number)
+        room: roomNum
       });
     });
   }
@@ -779,7 +917,7 @@ const realApi={
      if (res?.data?.stats) return res.data.stats;
    } catch {}
    const occ = await fetchSupabaseOccupied();
-   const totalRooms = 24;
+   const totalRooms = 40;
    return {
      rooms: { total: totalRooms, occupied: occ.length, ready: Math.max(0, totalRooms - occ.length), maintenance: 0 },
      revenue: { total: 0, hospitality: 0, restaurant: 0, bar: 0 }
@@ -909,13 +1047,24 @@ const realApi={
    return [];
  },
  occupied: async () => {
-   try {
-     const res = await sget(ROUTES.ROOM_BILLS, { limit: 200 });
-     const list = arr(res.data).filter(isInHouse).map(toStay).sort((x: any, y: any) => String(x.room).localeCompare(String(y.room), undefined, { numeric: true }));
-     if (list && list.length > 0) return list;
-   } catch {}
-   return fetchSupabaseOccupied();
- },
+    try {
+      const res = await sget(ROUTES.ROOM_BILLS, { limit: 200 });
+      const list = arr(res.data).filter(isInHouse).map(toStay);
+      if (list && list.length > 0) {
+        return list.sort((x: any, y: any) => new Date(y.checkIn || 0).getTime() - new Date(x.checkIn || 0).getTime());
+      }
+    } catch {}
+    const cloud = await fetchSupabaseOccupied();
+    return (cloud || []).sort((x: any, y: any) => new Date(y.checkIn || 0).getTime() - new Date(x.checkIn || 0).getTime());
+  },
+  available: async () => {
+    try {
+      const res = await sget('/rooms/available');
+      if (res?.data && Array.isArray(res.data)) return res.data;
+      if (res?.rooms && Array.isArray(res.rooms)) return res.rooms;
+    } catch {}
+    return fetchSupabaseAvailable();
+  },
    async roomOrders(stay: any) {
     if (stay?.folioRestaurantOrders || stay?.folioBarOrders) {
       const combined = [
@@ -988,7 +1137,34 @@ const realApi={
     try {
       const res = await sget('/rooms/' + id + '/folio');
       if (res?.data?.success && res.data?.folio) {
-        return res.data.folio;
+        const localF = res.data.folio;
+        // If local has 0 paid or missing guest contact, check cloud folio to ensure latest multi-terminal sync
+        if (!localF.room?.email || Number(localF.summary?.advancePaid || 0) === 0) {
+          try {
+            const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+            const cFolio = await fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanRoomNumber(id)) + '&department=eq.room_folio&order=created_at.desc&limit=1', { headers: h }).then(r => r.json()).catch(() => []);
+            if (Array.isArray(cFolio) && cFolio[0]) {
+              let cMeta: any = {};
+              try { cMeta = JSON.parse(cFolio[0].items_summary || '{}'); } catch {}
+              if (cMeta.email && !localF.room.email) localF.room.email = cMeta.email;
+              if (cMeta.aadharNumber && !localF.room.aadhar_number) localF.room.aadhar_number = cMeta.aadharNumber;
+              if (cMeta.address && !localF.room.address) localF.room.address = cMeta.address;
+              if (cMeta.checkinTime && (!localF.room.checkin_time || String(localF.room.checkin_time).includes('23:07'))) localF.room.checkin_time = cMeta.checkinTime;
+              if (cMeta.approxCheckout) localF.room.approx_checkout_time = cMeta.approxCheckout;
+              if (Number(cMeta.paid || 0) > Number(localF.summary?.advancePaid || 0)) {
+                localF.summary.advancePaid = Number(cMeta.paid);
+                localF.summary.grandTotal = Math.max(localF.summary.grandTotal, Number(cMeta.total || cMeta.grandTotal));
+                localF.summary.balanceDue = Math.max(0, localF.summary.grandTotal - localF.summary.advancePaid);
+                localF.room.total_paid = Number(cMeta.paid);
+                localF.room.total_room_charge = localF.summary.grandTotal;
+                if (cMeta.payments && cMeta.payments.length > 0 && (!localF.payments || localF.payments.length === 0)) {
+                  localF.payments = cMeta.payments;
+                }
+              }
+            }
+          } catch (_) {}
+        }
+        return localF;
       }
       if (res?.data?.room) {
         return res.data;
@@ -997,7 +1173,7 @@ const realApi={
 
     // 1b. Check if this is a checkout stay from local CRM history
     try {
-      const histRes = await sget('/api/hospitality/history/' + id);
+      const histRes = await sget(ROUTES.ROOM_BILLS + '/' + id);
       const rec = histRes?.data?.records?.[0] || histRes?.data?.history?.[0] || histRes?.data?.record || histRes?.data;
       if (rec && (rec.guest_name || rec.room_number || rec.rooms)) {
         const totalAdults = (rec.adults_male || 0) + (rec.adults_female || 0) + (rec.adults_other || 0) || rec.adults || 1;
@@ -1063,14 +1239,14 @@ const realApi={
     // 2. Direct Cloud Supabase fallback (works on 4G/5G/any remote network)
     try {
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      const timeoutTimer = controller ? setTimeout(() => controller.abort(), 1500) : null;
+      const timeoutTimer = controller ? setTimeout(() => controller.abort(), 8000) : null;
       const signal = controller?.signal;
       const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
       const cleanId = String(id).trim();
       const [occRows, folioRows, chargeRows] = await Promise.all([
         fetch(SUPABASE_URL + '/rest/v1/active_occupancies?or=(room_number.eq.' + encodeURIComponent(cleanId) + ',booking_id.eq.' + encodeURIComponent(cleanId) + ')&limit=1', { headers: h, signal }).then(r => r.json()).catch(() => []),
-        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=eq.room_folio&limit=1', { headers: h, signal }).then(r => r.json()).catch(() => []),
-        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=in.(restaurant,bar)&select=*', { headers: h, signal }).then(r => r.json()).catch(() => [])
+        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=eq.room_folio&order=created_at.desc&limit=1', { headers: h, signal }).then(r => r.json()).catch(() => []),
+        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=in.(restaurant,bar)&order=created_at.desc', { headers: h, signal }).then(r => r.json()).catch(() => [])
       ]).finally(() => { if (timeoutTimer) clearTimeout(timeoutTimer); });
 
       const occ = Array.isArray(occRows) && occRows[0] ? occRows[0] : null;
@@ -1162,17 +1338,31 @@ const realApi={
         dept: 'Bar Lounge'
       }));
 
-      const foodTotal = restaurantOrders.reduce((sum, o) => sum + o.total, 0) || Number(meta.foodTotal || meta.restaurant || 0);
+      const sc = meta.stayCalcNow || meta.stayCalcDeclared || null;
+      const foodTotal = restaurantOrders.reduce((sum, o) => sum + o.total, 0) || Number(sc?.fnbTotal || meta.foodTotal || meta.restaurant || 0);
       const barTotal = barOrders.reduce((sum, o) => sum + o.total, 0) || Number(meta.barTotal || meta.bar || 0);
-      const roomCharge = Number(meta.roomCharge || fRow?.subtotal || 2993);
-      const grandTotal = Number(meta.grandTotal || meta.total || fRow?.grand_total || (roomCharge + foodTotal + barTotal));
-      const paid = Number(meta.paid || 1500);
-      const pending = Math.max(0, grandTotal - paid);
+
+      let stayNights = 1;
+      try {
+        const cin = occ?.checkin_time || meta.checkinTime;
+        if (cin) {
+          stayNights = Math.max(1, Math.ceil((Date.now() - new Date(cin).getTime()) / (24 * 3600 * 1000)));
+        }
+      } catch (_) {}
+      const rType = String(occ?.room_type || meta.roomType || '').toLowerCase();
+      const baseDaily = rType.includes('pent') ? 4500 : (rType.includes('suit') ? 3500 : (rType.includes('plus') ? 2800 : (rType.includes('deluxe') ? 2200 : 2350)));
+      const fallbackRoomCharge = Math.round(baseDaily * stayNights * 1.05);
+
+      const roomCharge = Number(sc?.roomCharge ?? meta.roomCharge ?? fRow?.subtotal ?? fallbackRoomCharge);
+      const grandTotal = Number(sc?.grandTotal ?? meta.grandTotal ?? meta.total ?? fRow?.grand_total ?? (roomCharge + foodTotal + barTotal));
+      const paid = Number(sc?.paid ?? meta.paid ?? (fRow?.status === 'settled' ? grandTotal : null) ?? occ?.total_paid ?? occ?.advance_payment ?? 0);
+      const refundDue = Number(sc?.refundDue ?? Math.max(0, paid - grandTotal));
+      const pending = Number(sc?.balanceDue ?? Math.max(0, grandTotal - paid));
 
       return {
         room: {
           id: occ?.room_id || 429,
-          room_number: cleanId,
+          room_number: cleanRoomNumber(cleanId),
           room_type: occ?.room_type || meta.roomType || 'Executive Room',
           guest_name: occ?.guest_name || meta.guestName || 'In-House Guest',
           mobile: occ?.guest_mobile || meta.mobile || '',
@@ -1182,17 +1372,32 @@ const realApi={
           address: meta.address || '',
           dob: meta.dob || '',
           checkin_time: occ?.checkin_time || meta.checkinTime,
-          approx_checkout_time: meta.approxCheckout || '',
+          approx_checkout_time: (() => {
+            let exp = meta.approxCheckout || occ?.approx_checkout_time || occ?.expected_checkout_time || '';
+            if (!exp && (occ?.checkin_time || meta.checkinTime)) {
+              try {
+                const ct = occ?.checkin_time || meta.checkinTime;
+                const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
+                if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+              } catch (_) {}
+            }
+            return exp;
+          })(),
           total_room_charge: roomCharge,
           total_paid: paid,
           voucher_number: meta.voucherNumber || '',
           advance_receipt_no: meta.advanceReceiptNo || '',
           advance_payment_mode: meta.paymentMode || 'Cash',
           booking_source: meta.source || 'Walk-in',
-          checked_in_by: meta.checkedInBy || 'Front Desk'
+          checked_in_by: meta.checkedInBy || 'Front Desk',
+          adults: meta.adults || (Number(meta.adultsMale || 1) + Number(meta.adultsFemale || 0)),
+          adults_male: meta.adultsMale || 1,
+          adults_female: meta.adultsFemale || 0,
+          payments: meta.payments || (paid > 0 ? [{ amount: paid, mode: meta.paymentMode || 'Cash', receiptNo: meta.advanceReceiptNo || 'CR01', cashier: meta.checkedInBy || 'Staff', date: meta.checkinTime }] : [])
         },
         restaurantOrders,
         barOrders,
+        payments: meta.payments || (paid > 0 ? [{ amount: paid, mode: meta.paymentMode || 'Cash', receiptNo: meta.advanceReceiptNo || 'CR01', cashier: meta.checkedInBy || 'Staff', date: meta.checkinTime }] : []),
         summary: {
           roomCharge,
           foodTotal,
@@ -1200,7 +1405,9 @@ const realApi={
           fnbTotal: foodTotal + barTotal,
           grandTotal,
           advancePaid: paid,
-          balanceDue: pending
+          balanceDue: pending,
+          refundDue,
+          stayCalcNow: sc
         }
       };
     } catch (e) {

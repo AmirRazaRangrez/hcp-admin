@@ -14,8 +14,8 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system';
 import { api } from '../src/api/client';
-import { Screen, Card, Badge, useLoad, memCache } from '../src/lib/ui';
-import { c, money, when } from '../src/lib/theme';
+import { Screen, Card, Badge, useLoad, memCache, clearCache } from '../src/lib/ui';
+import { c, money, when, cleanRoomNumber, formatDT } from '../src/lib/theme';
 import { BillCard, BillSheet } from '../src/lib/billsheet';
 import {
   UserIcon,
@@ -26,24 +26,6 @@ import {
   ClockIcon,
   CheckoutIcon
 } from '../src/lib/icons';
-
-const formatDT = (val?: string) => {
-  if (!val) return '—';
-  try {
-    const d = new Date(String(val).replace(' ', 'T'));
-    if (isNaN(d.getTime())) return String(val);
-    return d.toLocaleString('en-IN', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
-  } catch {
-    return String(val);
-  }
-};
 
 const DetailRow = ({ label, value, bold, color, onPress }: any) => {
   if (value === undefined || value === null || value === '') return null;
@@ -60,6 +42,87 @@ const DetailRow = ({ label, value, bold, color, onPress }: any) => {
   }
   return content;
 };
+
+function getPaymentStageNote(p: any, idx: number, checkInTime?: string): { label: string; bg: string; color: string; border: string } {
+  const type = String(p?.payment_type || p?.type || '').toLowerCase();
+  const notes = String(p?.notes || p?.purpose || '').toLowerCase();
+
+  if (
+    type.includes('checkout') ||
+    type.includes('settle') ||
+    notes.includes('checkout') ||
+    notes.includes('check-out') ||
+    notes.includes('settlement') ||
+    notes.includes('final')
+  ) {
+    return {
+      label: 'for checkout',
+      bg: '#ECFDF5',
+      color: '#059669',
+      border: '#A7F3D0'
+    };
+  }
+
+  if (
+    notes.includes('in-stay') ||
+    notes.includes('while staying') ||
+    notes.includes('during stay') ||
+    type === 'fnb_settlement'
+  ) {
+    return {
+      label: 'while staying',
+      bg: '#FEF3C7',
+      color: '#D97706',
+      border: '#FDE68A'
+    };
+  }
+
+  if (
+    notes.includes('checkin') ||
+    notes.includes('check-in') ||
+    notes.includes('advance at checkin')
+  ) {
+    return {
+      label: 'for check in',
+      bg: '#EFF6FF',
+      color: '#2563EB',
+      border: '#BFDBFE'
+    };
+  }
+
+  // If first payment and advance
+  if (idx === 0 && (type === 'advance' || !type)) {
+    return {
+      label: 'for check in',
+      bg: '#EFF6FF',
+      color: '#2563EB',
+      border: '#BFDBFE'
+    };
+  }
+
+  // If timestamp is more than 15 minutes after check-in
+  if (checkInTime && (p?.created_at || p?.date)) {
+    try {
+      const pTime = new Date(p.created_at || p.date).getTime();
+      const cTime = new Date(checkInTime).getTime();
+      if (!isNaN(pTime) && !isNaN(cTime) && (pTime - cTime > 15 * 60 * 1000)) {
+        return {
+          label: 'while staying',
+          bg: '#FEF3C7',
+          color: '#D97706',
+          border: '#FDE68A'
+        };
+      }
+    } catch (_) {}
+  }
+
+  return {
+    label: idx > 0 ? 'while staying' : 'for check in',
+    bg: idx > 0 ? '#FEF3C7' : '#EFF6FF',
+    color: idx > 0 ? '#D97706' : '#2563EB',
+    border: idx > 0 ? '#FDE68A' : '#BFDBFE'
+  };
+}
 
 function buildCrmPayload(s: any, bills: any[]) {
   const r = s?.raw || {};
@@ -199,15 +262,101 @@ export default function RoomDetails() {
     isCheckout?: string;
     checkoutId?: string;
   }>();
-  const id = params.id || params.room;
+  const cleanRoomParam = cleanRoomNumber(params.room);
+  const id = cleanRoomParam || params.room || params.id;
   const isCheckoutParam = params.isCheckout === 'true' || params.isCheckout === '1';
   const [openBill, setOpenBill] = useState<any>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
 
   const { data: stayData, err, busy, at, reload } = useLoad(async () => {
-    const cleanId = String(id || '').trim().toLowerCase();
+    const targetRoomNum = cleanRoomParam || cleanRoomNumber(params.room || id);
+    const cleanId = String(targetRoomNum || id || '').trim().toLowerCase();
 
-    // 0. Instant Cache Check: retrieve room immediately if available in memory
+    // 0. Checkout View Bypass:
+    // When viewing a checked-out / available room, NEVER call api.roomFolio(id) because
+    // roomFolio is strictly for active rooms and numeric IDs can clash with SQLite internal room IDs!
+    if (isCheckoutParam || String(id).startsWith('CO-') || String(id).startsWith('out:')) {
+      // 0a. Check in-memory cache first (populated by available.tsx)
+      if (targetRoomNum && memCache?.get) {
+        const cached = memCache.get('room:' + targetRoomNum)?.d;
+        if (cached && (cached.guest || cached.guestName)) {
+          return {
+            isCheckout: true,
+            ...cached,
+            room: targetRoomNum,
+            roomNumber: targetRoomNum
+          };
+        }
+      }
+
+      // 0b. Query Supabase room_charges_inbox for checkout record of THIS room
+      try {
+        const targetRoom = targetRoomNum || String(params.room || id).replace(/^out:/, '').replace(/^in:/, '').trim();
+        const SUPABASE_URL = 'https://hlwmsllmqfdxfmqulrat.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhsd21zbGxtcWZkeGZtcXVscmF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzc4MzgsImV4cCI6MjEwNTMxMzgzOH0.r7Nb8rEJTrZvprpf4G023nMY0suq2OqVGetG0I8esjk';
+        const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.room_checkout&room_number=eq.${encodeURIComponent(targetRoom)}&order=created_at.desc&limit=1`, { headers: h }).then(r => r.json());
+        if (Array.isArray(res) && res.length > 0) {
+          const row = res[0];
+          let meta: any = {};
+          try { meta = JSON.parse(row.items_summary || '{}'); } catch {}
+          return {
+            isCheckout: true,
+            id: String(row.id),
+            room: targetRoom,
+            roomNumber: targetRoom,
+            guest: meta.guestName || meta.guest_name || params.guest || 'Valued Guest',
+            guestName: meta.guestName || meta.guest_name || params.guest || 'Valued Guest',
+            mobile: meta.mobile || params.phone || '',
+            adults: Number(meta.adults || 1),
+            children: Number(meta.children || 0),
+            mealPlan: meta.mealPlan || 'without_breakfast',
+            roomCount: Number(meta.roomCount || 1),
+            checkIn: meta.checkinTime || meta.checkin_time || row.created_at,
+            checkOut: meta.checkoutTime || meta.checkout_time || row.created_at,
+            checkoutTime: meta.checkoutTime || meta.checkout_time || row.created_at,
+            checkedInBy: meta.checkedInBy || 'Front Desk',
+            checkedOutBy: meta.checkedOutBy || row.settled_by || 'Staff',
+            total: Number(row.grand_total || meta.netSettle || meta.total || 0),
+            paid: Number(row.grand_total || meta.netSettle || meta.total || 0),
+            pending: 0,
+            payments: meta.payments || [],
+            source: meta.source || 'Front Desk',
+            roomCharge: Number(row.subtotal || row.grand_total || 0),
+            restaurant: 0,
+            bar: 0,
+            extra: 0,
+            discount: 0
+          };
+        }
+      } catch (cloudErr) {
+        console.warn('Cloud checkout fetch notice:', cloudErr);
+      }
+
+      // 0c. Fallback for checked-out room from params
+      const pTotal = Number(params.total || params.paid || 0);
+      const pPaid = Number(params.paid || pTotal);
+      return {
+        isCheckout: true,
+        id: String(params.bookingId || id),
+        room: targetRoomNum || String(params.room || id),
+        roomNumber: targetRoomNum || String(params.room || id),
+        guest: params.guest || 'Valued Guest',
+        guestName: params.guest || 'Valued Guest',
+        mobile: params.phone || '',
+        total: pTotal,
+        paid: pPaid,
+        pending: 0,
+        payments: [],
+        source: 'Front Desk',
+        checkIn: new Date().toISOString(),
+        checkOut: new Date().toISOString(),
+        checkoutTime: new Date().toISOString()
+      };
+    }
+
+    // 1. For Active In-House Rooms:
+    // Check in-memory cache
     let found: any = null;
     try {
       const cachedRoom = memCache?.get ? memCache.get('room:' + cleanId)?.d : null;
@@ -224,11 +373,22 @@ export default function RoomDetails() {
       }
     } catch (_) {}
 
-    // 1. Live CRM room folio or checkout folio
+    // Live CRM room folio for active in-house room
     try {
-      const folio = await api.roomFolio(id);
+      const folio = await api.roomFolio(cleanRoomParam || id);
       if (folio && (folio.room || folio.isCheckout)) {
-        if (folio.isCheckout) {
+        // Validation: Ensure folio room matches requested target room
+        const fetchedRoom = cleanRoomNumber(
+          folio.roomNumber ||
+          folio.room_number ||
+          folio.room?.room_number ||
+          folio.room?.room_numbers ||
+          folio.room?.roomNumber ||
+          (typeof folio.room === 'string' || typeof folio.room === 'number' ? folio.room : '')
+        );
+        if (cleanRoomParam && fetchedRoom && fetchedRoom !== cleanRoomParam) {
+          console.warn(`[Room Details] Folio room (${fetchedRoom}) does not match requested room (${cleanRoomParam}). Ignoring mismatched active folio.`);
+        } else if (folio.isCheckout) {
           const fr = folio.room || {};
           return {
             isCheckout: true,
@@ -253,53 +413,93 @@ export default function RoomDetails() {
             pending: 0,
             raw: fr
           };
+        } else {
+          const fr = folio.room;
+          const fs = folio.summary || {};
+          const mergedOrders = [
+            ...(folio.restaurantOrders || []).map((o: any) => ({ ...o, dept: 'Restaurant' })),
+            ...(folio.barOrders || []).map((o: any) => ({ ...o, dept: 'Bar' }))
+          ];
+
+          const sc = fs.stayCalcNow || fs.stayCalcDeclared || null;
+          const roomCharge = Number(fs.roomCharge ?? fr.total_room_charge ?? sc?.roomCharge ?? (found?.roomCharge || 0));
+          const foodTotal = Number(fs.foodTotal ?? sc?.fnbTotal ?? (found?.restaurant || 0));
+          const barTotal = Number(fs.barTotal ?? (found?.bar || 0));
+          const extra = Number(fs.hotelExtrasCharge ?? (found?.extra || 0));
+          const discount = Number(fs.discountAmount ?? sc?.discountAmount ?? (found?.discount || 0));
+          const total = Number(fs.grandTotal ?? sc?.grandTotal ?? (roomCharge + foodTotal + barTotal + extra));
+          const paid = Number(fs.advancePaid ?? sc?.paid ?? fr.total_paid ?? (found?.paid || 0));
+          const refundDue = Number(sc?.refundDue ?? (paid > total ? paid - total : 0));
+          const pending = Number(fs.balanceDue ?? sc?.balanceDue ?? (total > paid ? total - paid : 0));
+
+          return {
+            isCheckout: isCheckoutParam,
+            ...(found || {}),
+            id: String(fr.id || fr.booking_id || id),
+            room: cleanRoomNumber(fr.room_number || id),
+            guest: fr.guest_name || found?.guest || 'In-House Guest',
+            mobile: fr.mobile || found?.mobile || '',
+            email: fr.email || found?.email || '',
+            aadharNumber: fr.aadhar_number || found?.aadharNumber || '',
+            aadhar_number: fr.aadhar_number || found?.aadhar_number || '',
+            docType: fr.doc_type || found?.docType || 'Aadhaar Card',
+            doc_type: fr.doc_type || found?.doc_type || 'Aadhaar Card',
+            address: fr.address || found?.address || '',
+            dob: fr.dob || found?.dob || '',
+            adults: Number(fr.adults || (Number(fr.adults_male || 0) + Number(fr.adults_female || 0)) || found?.adults || 1),
+            adults_male: fr.adults_male ?? found?.adults_male ?? 1,
+            adults_female: fr.adults_female ?? found?.adults_female ?? 0,
+            children: Number(fr.children ?? found?.children ?? 0),
+            checkIn: (() => {
+              return fr.checkin_time || found?.checkIn || new Date().toISOString();
+            })(),
+            checkOut: (() => {
+              let exp = fr.approx_checkout_time || fr.expected_checkout_time || fr.checkout_time || found?.approxCheckOut || found?.checkOut || '';
+              if (!exp) {
+                const cin = fr.checkin_time || found?.checkIn;
+                if (cin) {
+                  try {
+                    const dIn = new Date(String(cin).includes('T') ? cin : String(cin).replace(' ', 'T') + '+05:30').getTime();
+                    if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+                  } catch (_) {}
+                }
+              }
+              return exp;
+            })(),
+            approxCheckOut: (() => {
+              let exp = fr.approx_checkout_time || fr.expected_checkout_time || fr.checkout_time || found?.approxCheckOut || found?.checkOut || '';
+              if (!exp) {
+                const cin = fr.checkin_time || found?.checkIn;
+                if (cin) {
+                  try {
+                    const dIn = new Date(String(cin).includes('T') ? cin : String(cin).replace(' ', 'T') + '+05:30').getTime();
+                    if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+                  } catch (_) {}
+                }
+              }
+              return exp;
+            })(),
+            restaurant: foodTotal,
+            bar: barTotal,
+            extra,
+            discount,
+            total,
+            paid,
+            pending,
+            refundDue,
+            source: fr.booking_source || found?.source || 'Walk-in',
+            checkedInBy: fr.checked_in_by || found?.checkedInBy || 'Front Desk',
+            mealPlan: fr.meal_plan || found?.mealPlan || 'EP (Room Only)',
+            voucherNumber: fr.voucher_number || found?.voucherNumber || '',
+            advanceReceiptNo: fr.advance_receipt_no || found?.advanceReceiptNo || '',
+            paymentMode: fr.advance_payment_mode || found?.paymentMode || 'Cash',
+            folioRestaurantOrders: folio.restaurantOrders || [],
+            folioBarOrders: folio.barOrders || [],
+            folioOrders: mergedOrders,
+            payments: folio.payments || [],
+            raw: fr
+          };
         }
-
-        const fr = folio.room;
-        const fs = folio.summary || {};
-        const mergedOrders = [
-          ...(folio.restaurantOrders || []).map((o: any) => ({ ...o, dept: 'Restaurant' })),
-          ...(folio.barOrders || []).map((o: any) => ({ ...o, dept: 'Bar' }))
-        ];
-
-        return {
-          isCheckout: isCheckoutParam,
-          ...(found || {}),
-          id: String(fr.id || fr.booking_id || id),
-          room: String(fr.room_number || id),
-          guest: fr.guest_name || found?.guest || 'In-House Guest',
-          mobile: fr.mobile || found?.mobile || '',
-          email: fr.email || found?.email || '',
-          aadharNumber: fr.aadhar_number || found?.aadharNumber || '',
-          aadhar_number: fr.aadhar_number || found?.aadhar_number || '',
-          docType: fr.doc_type || found?.docType || 'Aadhaar Card',
-          doc_type: fr.doc_type || found?.doc_type || 'Aadhaar Card',
-          address: fr.address || found?.address || '',
-          dob: fr.dob || found?.dob || '',
-          roomType: fr.room_type || found?.roomType || 'Executive Room',
-          checkIn: fr.checkin_time || found?.checkIn || new Date().toISOString(),
-          checkOut: fr.approx_checkout_time || found?.checkOut || '',
-          approxCheckOut: fr.approx_checkout_time || found?.approxCheckOut || '',
-          roomCharge: Number(fs.roomCharge ?? fr.total_room_charge ?? (found?.roomCharge || 0)),
-          restaurant: Number(fs.foodTotal ?? (found?.restaurant || 0)),
-          bar: Number(fs.barTotal ?? (found?.bar || 0)),
-          extra: Number(fs.hotelExtrasCharge ?? (found?.extra || 0)),
-          discount: Number(fs.discountAmount ?? (found?.discount || 0)),
-          total: Number(fs.grandTotal ?? (found?.total || 0)),
-          paid: Number(fs.advancePaid ?? fr.total_paid ?? (found?.paid || 0)),
-          pending: Number(fs.balanceDue ?? (found?.pending || 0)),
-          source: fr.booking_source || found?.source || 'Walk-in',
-          checkedInBy: fr.checked_in_by || found?.checkedInBy || 'Front Desk',
-          mealPlan: fr.meal_plan || found?.mealPlan || 'EP (Room Only)',
-          voucherNumber: fr.voucher_number || found?.voucherNumber || '',
-          advanceReceiptNo: fr.advance_receipt_no || found?.advanceReceiptNo || '',
-          paymentMode: fr.advance_payment_mode || found?.paymentMode || 'Cash',
-          folioRestaurantOrders: folio.restaurantOrders || [],
-          folioBarOrders: folio.barOrders || [],
-          folioOrders: mergedOrders,
-          payments: folio.payments || [],
-          raw: fr
-        };
       }
     } catch (e) {
       console.warn('[Room Details] live folio fetch error:', e);
@@ -335,10 +535,30 @@ export default function RoomDetails() {
         email: '',
         address: '',
         dob: '',
-        roomType: 'Executive Room',
-        checkIn: new Date().toISOString(),
-        checkOut: new Date().toISOString(),
-        checkoutTime: new Date().toISOString(),
+        checkIn: params.checkIn || found?.checkIn || new Date().toISOString(),
+        checkOut: (() => {
+          let exp = params.checkOut || params.approxCheckOut || found?.approxCheckOut || found?.checkOut || '';
+          if (!exp) {
+            try {
+              const cin = params.checkIn || found?.checkIn || new Date().toISOString();
+              const dIn = new Date(String(cin).includes('T') ? cin : String(cin).replace(' ', 'T') + '+05:30').getTime();
+              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+            } catch (_) {}
+          }
+          return exp;
+        })(),
+        approxCheckOut: (() => {
+          let exp = params.approxCheckOut || params.checkOut || found?.approxCheckOut || found?.checkOut || '';
+          if (!exp) {
+            try {
+              const cin = params.checkIn || found?.checkIn || new Date().toISOString();
+              const dIn = new Date(String(cin).includes('T') ? cin : String(cin).replace(' ', 'T') + '+05:30').getTime();
+              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
+            } catch (_) {}
+          }
+          return exp;
+        })(),
+        checkoutTime: params.checkOut || params.approxCheckOut || '',
         roomCharge: pTotal,
         restaurant: 0,
         bar: 0,
@@ -559,7 +779,7 @@ export default function RoomDetails() {
   // 6. number of rooms
   const roomCount = Number(s?.roomCount || s?.raw?.room_count || (Array.isArray(s?.rooms) ? s.rooms.length : (String(s?.room || s?.roomNumber || '').split(',').length || 1)));
   // 7. room number
-  const roomNumberDisplay = String(s?.roomNumber || s?.room || (Array.isArray(s?.rooms) ? s.rooms.join(', ') : (s?.raw?.room_number || id)));
+  const roomNumberDisplay = cleanRoomNumber(String(s?.roomNumber || s?.room || (Array.isArray(s?.rooms) ? s.rooms.join(', ') : (s?.raw?.room_number || id))));
   // 8. checkin tmie
   const checkinTimeFormatted = formatDT(s?.checkIn || s?.checkinTime || s?.raw?.checkin_time);
   // 9. payment history with date & time
@@ -568,12 +788,26 @@ export default function RoomDetails() {
     : (Array.isArray(s?.raw?.payments) && s.raw.payments.length > 0
         ? s.raw.payments
         : (Number(s?.paid || s?.total || 0) > 0 ? [{
+            id: s?.id || 1,
             amount: Number(s?.paid || s?.total || 0),
-            mode: s?.paymentMode || s?.raw?.final_settlement_mode || s?.raw?.advance_payment_mode || 'Settled',
-            date: s?.checkOut || s?.checkIn || new Date().toISOString(),
-            cashier: s?.checkedOutBy || s?.checkedInBy || 'Staff',
-            receiptNo: s?.raw?.final_receipt_no || s?.advanceReceiptNo || ''
+            payment_mode: s?.paymentMode || s?.raw?.final_settlement_mode || s?.raw?.advance_payment_mode || 'Cash',
+            mode: s?.paymentMode || s?.raw?.final_settlement_mode || s?.raw?.advance_payment_mode || 'Cash',
+            created_at: s?.checkIn || new Date().toISOString(),
+            date: s?.checkIn || new Date().toISOString(),
+            cashier_name: s?.checkedInBy || s?.checkedOutBy || 'Front Desk Staff',
+            cashier: s?.checkedInBy || s?.checkedOutBy || 'Front Desk Staff',
+            receipt_no: s?.advanceReceiptNo || s?.raw?.final_receipt_no || ('RCP-' + (s?.id || '001')),
+            receiptNo: s?.advanceReceiptNo || s?.raw?.final_receipt_no || ('RCP-' + (s?.id || '001')),
+            notes: 'paid while checkin : ' + (s?.paymentMode || 'Cash'),
+            payment_type: 'advance',
+            split_cash: s?.splitCash || 0,
+            split_online: s?.splitOnline || 0,
+            split_card: s?.splitCard || 0,
+            split_cheque: s?.splitCheque || 0
           }] : []));
+  const totalPaymentsPaid = paymentsList
+    .filter((p: any) => !String(p.payment_type || p.type || '').toLowerCase().includes('refund'))
+    .reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0) || Number(s?.paid || 0);
   // 10. accept by (name of staff)
   const staffName = s?.checkedOutBy || s?.checkedInBy || s?.raw?.checked_out_by || s?.raw?.checked_in_by || 'Staff';
   // 11. checkout
@@ -584,7 +818,7 @@ export default function RoomDetails() {
       title={
         isCheckout
           ? `Check-out · ${roomCount > 1 ? `Rooms ${roomNumberDisplay}` : `Room ${roomNumberDisplay}`}`
-          : (s ? `Room ${s.room}` : (params.room ? `Room ${params.room}` : 'Room Details'))
+          : (s ? `Room ${cleanRoomNumber(s.room)}` : (params.room ? `Room ${cleanRoomNumber(params.room)}` : 'Room Details'))
       }
       subtitle={
         isCheckout
@@ -612,8 +846,16 @@ export default function RoomDetails() {
           router.replace('/(tabs)');
         }
       }}
-      busy={busy || ordersBusy}
-      reload={() => { reload(); reloadOrders(); }}
+      reload={() => {
+        try {
+          const cleanId = String(id || '').trim().toLowerCase();
+          clearCache('room:' + cleanId);
+          clearCache('room:' + id);
+          clearCache('occupied');
+        } catch (_) {}
+        reload();
+        reloadOrders();
+      }}
       at={at}
       err={err}
     >
@@ -716,66 +958,183 @@ export default function RoomDetails() {
             {/* 9. payment history with date & time */}
             <View style={styles.sectionHeaderRow}>
               <CreditCardIcon size={16} color={c.ink} />
-              <Text style={styles.sectionTitle}>Payment History with Date & Time</Text>
+              <Text style={styles.sectionTitle}>Payment History & Collections ({paymentsList.length})</Text>
             </View>
 
-            <Card style={styles.checkoutPaymentsCard}>
-              {paymentsList.length === 0 ? (
-                <Text style={styles.noPaymentsText}>No payment history records found.</Text>
-              ) : (
-                paymentsList.map((p: any, idx: number) => {
-                  const pAmt = Number(p.amount || 0);
-                  const pMode = String(p.mode || p.payment_mode || 'Cash').toUpperCase();
-                  const pDate = formatDT(p.date || p.created_at || p.realized_at);
-                  const pStaff = p.cashier || p.cashier_name || staffName || 'Staff';
-                  const pReceipt = p.receiptNo || p.receipt_no;
-                  const isRefund = String(p.type || '').toLowerCase().includes('refund') || pAmt < 0;
+            {paymentsList.length === 0 ? (
+              <Card>
+                <Text style={{ color: c.mute, textAlign: 'center', paddingVertical: 12 }}>
+                  No payment history records found.
+                </Text>
+              </Card>
+            ) : (
+              paymentsList.map((p: any, idx: number) => {
+                const pAmt = Number(p.amount || 0);
+                const pMode = String(p.mode || p.payment_mode || 'Cash').toUpperCase();
+                const pDate = formatDT(p.date || p.created_at || p.realized_at || s?.checkIn);
+                const pStaff = p.cashier || p.cashier_name || staffName || 'Staff';
+                const pReceipt = p.receiptNo || p.receipt_no || ('RCP-' + (p.id || idx + 1));
+                const isRefund = String(p.type || p.payment_type || '').toLowerCase().includes('refund') || pAmt < 0;
 
-                  return (
-                    <View
-                      key={pReceipt || idx}
-                      style={[styles.checkoutPaymentItem, idx > 0 && styles.checkoutPaymentItemBorder]}
-                    >
-                      <View style={styles.checkoutPaymentTopRow}>
-                        <View style={[styles.checkoutPaymentBadge, isRefund && { backgroundColor: '#FEE2E2' }]}>
-                          <Text style={[styles.checkoutPaymentBadgeText, isRefund && { color: '#DC2626' }]}>
-                            {isRefund ? 'REFUND' : pMode}
+                const cardSurcharge = parseFloat(p.card_surcharge) || 0;
+                const upiTax = parseFloat(p.upi_tax) || 0;
+                const totalFee = cardSurcharge + upiTax;
+                const baseAmount = p.base_amount !== undefined
+                  ? parseFloat(p.base_amount)
+                  : Math.max(0, pAmt - totalFee);
+
+                let feePercentStr = '';
+                if (totalFee > 0 && baseAmount > 0) {
+                  const pct = (totalFee / baseAmount) * 100;
+                  feePercentStr = `${pct.toFixed(1).replace(/\.0$/, '')}%`;
+                }
+
+                const stage = getPaymentStageNote(p, idx, s?.checkIn);
+                const isPendingCheque = String(p.cheque_status || '').toLowerCase() === 'pending' || (pMode === 'CHEQUE' && !p.realized_at);
+
+                return (
+                  <Card key={p.id ? `pay-${p.id}` : (pReceipt || idx)} style={{ marginBottom: 10 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, flex: 1, paddingRight: 8 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '800', color: c.ink }}>
+                          Receipt: {pReceipt}
+                        </Text>
+                        <View style={{
+                          backgroundColor: stage.bg,
+                          borderColor: stage.border,
+                          borderWidth: 1,
+                          borderRadius: 6,
+                          paddingHorizontal: 8,
+                          paddingVertical: 2
+                        }}>
+                          <Text style={{ color: stage.color, fontSize: 11, fontWeight: '700' }}>
+                            {stage.label}
                           </Text>
                         </View>
-                        <Text style={[styles.checkoutPaymentAmount, isRefund ? { color: '#DC2626' } : { color: '#16A34A' }]}>
-                          {isRefund ? `- ${money(Math.abs(pAmt))}` : money(pAmt)}
+                      </View>
+                      <View style={{ flexShrink: 0 }}>
+                        <Badge
+                          text={isRefund ? 'REFUND' : (isPendingCheque ? 'PENDING' : 'REALIZED')}
+                          color={isRefund ? c.bad : (isPendingCheque ? '#D97706' : c.ok)}
+                        />
+                      </View>
+                    </View>
+
+                    <View style={styles.rowDivider} />
+
+                    <DetailRow label="Date & Time" value={pDate} bold />
+                    <DetailRow label="Accepted By" value={pStaff} bold />
+                    <DetailRow label="Payment Mode" value={pMode} bold />
+                    {p.utr_number ? <DetailRow label="UTR / Ref No" value={p.utr_number} /> : null}
+                    {p.cheque_no ? <DetailRow label="Cheque No" value={`${p.cheque_no} ${p.bank_name ? `(${p.bank_name})` : ''}`} /> : null}
+                    {p.card_digits ? <DetailRow label="Card Digits" value={`**** **** **** ${p.card_digits}`} /> : null}
+
+                    {totalFee > 0 ? (
+                      <>
+                        <DetailRow label="Amount (Without POS/MDR Fee)" value={money(baseAmount)} bold />
+                        {cardSurcharge > 0 ? (
+                          <DetailRow
+                            label={feePercentStr ? `+ Card / POS Fee (${feePercentStr})` : '+ Card / POS Fee'}
+                            value={`+ ${money(cardSurcharge)}`}
+                            color="#D97706"
+                            bold
+                          />
+                        ) : null}
+                        {upiTax > 0 ? (
+                          <DetailRow
+                            label={feePercentStr ? `+ UPI / MDR Fee (${feePercentStr})` : '+ UPI / MDR Fee'}
+                            value={`+ ${money(upiTax)}`}
+                            color="#D97706"
+                            bold
+                          />
+                        ) : null}
+                        <DetailRow
+                          label="Total Paid (With Fee)"
+                          value={isRefund ? `- ${money(Math.abs(pAmt))}` : money(pAmt)}
+                          color={isRefund ? c.bad : c.ok}
+                          bold
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <DetailRow
+                          label="Total Paid Amount"
+                          value={isRefund ? `- ${money(Math.abs(pAmt))}` : money(pAmt)}
+                          color={isRefund ? c.bad : c.ok}
+                          bold
+                        />
+                        {p.split_cash > 0 && p.split_cash < pAmt ? (
+                          <DetailRow label="Paid via Cash" value={money(p.split_cash)} />
+                        ) : null}
+                        {p.split_online > 0 && p.split_online < pAmt ? (
+                          <DetailRow label="Paid via Online UPI" value={money(p.split_online)} />
+                        ) : null}
+                        {p.split_card > 0 && p.split_card < pAmt ? (
+                          <DetailRow label="Paid via Card POS" value={money(p.split_card)} />
+                        ) : null}
+                        {p.split_cheque > 0 && p.split_cheque < pAmt ? (
+                          <DetailRow label="Paid via Cheque" value={money(p.split_cheque)} />
+                        ) : null}
+                      </>
+                    )}
+
+                    {p.notes && !String(p.notes).toLowerCase().startsWith('paid while checkin : ' + String(p.payment_mode || p.mode || '').toLowerCase()) ? (
+                      <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#F1F5F9' }}>
+                        <Text style={{ fontSize: 11, color: c.mute, fontStyle: 'italic' }}>
+                          Note: {p.notes}
                         </Text>
                       </View>
+                    ) : null}
+                  </Card>
+                );
+              })
+            )}
 
-                      <View style={styles.checkoutPaymentMetaRow}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          <ClockIcon size={12} color="#64748B" />
-                          <Text style={styles.checkoutPaymentDate}>{pDate}</Text>
-                        </View>
-                        <Text style={styles.checkoutPaymentStaff}>Staff: {pStaff}</Text>
-                      </View>
-
-                      {pReceipt ? (
-                        <Text style={styles.checkoutPaymentReceipt}>Receipt No: {pReceipt}</Text>
-                      ) : null}
-                    </View>
-                  );
-                })
-              )}
-            </Card>
+            {paymentsList.length > 0 ? (
+              <View style={{
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                backgroundColor: '#F0FDF4',
+                padding: 12,
+                borderRadius: 10,
+                marginTop: 2,
+                marginBottom: 10,
+                borderWidth: 1,
+                borderColor: '#BBF7D0'
+              }}>
+                <View>
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: '#166534' }}>
+                    Total Realized Payments ({paymentsList.length})
+                  </Text>
+                  <Text style={{ fontSize: 11, color: '#15803D', marginTop: 2 }}>
+                    All receipts verified & realized
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 18, fontWeight: '900', color: '#15803D' }}>
+                  {money(totalPaymentsPaid)}
+                </Text>
+              </View>
+            ) : null}
           </>
         ) : (
         <>
           {/* Top Room Banner Card */}
           <Card style={styles.heroCard}>
             <View style={styles.heroHeader}>
-              <View>
-                <Text style={styles.heroRoomNumber}>Room {s.room}</Text>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.heroRoomNumber}>Room {cleanRoomNumber(s.room)}</Text>
                 <Text style={styles.heroRoomType}>{s.roomType || 'Standard Room'}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
+                  <ClockIcon size={13} color="#0284C7" />
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#0369A1' }}>
+                    Expected Checkout: {s.approxCheckOut ? when(s.approxCheckOut) : (s.checkOut ? when(s.checkOut) : 'In-House')}
+                  </Text>
+                </View>
               </View>
               <Badge
-                text={s.pending > 0 ? `DUE ${money(s.pending)}` : 'SETTLED / PAID'}
-                color={s.pending > 0 ? c.warn : c.ok}
+                text={s.refundDue > 0 ? `REFUND ${money(s.refundDue)}` : (s.pending > 0 ? `DUE ${money(s.pending)}` : 'SETTLED / PAID')}
+                color={s.refundDue > 0 ? c.ok : (s.pending > 0 ? c.warn : c.ok)}
               />
             </View>
             <View style={styles.heroDivider} />
@@ -789,9 +1148,9 @@ export default function RoomDetails() {
                 <Text style={[styles.heroStatVal, { color: c.ok }]}>{money(s.paid)}</Text>
               </View>
               <View style={styles.heroStatItem}>
-                <Text style={styles.heroStatLabel}>Due Balance</Text>
-                <Text style={[styles.heroStatVal, { color: s.pending > 0 ? c.bad : c.ok }]}>
-                  {money(s.pending)}
+                <Text style={styles.heroStatLabel}>{s.refundDue > 0 ? 'Refund Due' : 'Due Balance'}</Text>
+                <Text style={[styles.heroStatVal, { color: s.refundDue > 0 ? c.ok : (s.pending > 0 ? c.bad : c.ok) }]}>
+                  {money(s.refundDue > 0 ? s.refundDue : s.pending)}
                 </Text>
               </View>
             </View>
@@ -879,7 +1238,7 @@ export default function RoomDetails() {
             <View style={styles.rowDivider} />
             <DetailRow
               label="Occupancy (Pax)"
-              value={`${s.adults || 1} Adult(s)${s.children ? `, ${s.children} Child` : ''}${s.extraBeds ? `, ${s.extraBeds} Extra Bed` : ''}`}
+              value={`${s.adults || 1} Adult(s)${s.adults_male !== undefined && s.adults_female !== undefined && (s.adults_male > 0 || s.adults_female > 0) ? ` (${s.adults_male || 0} Male, ${s.adults_female || 0} Female)` : ''}${s.children ? `, ${s.children} Child` : ''}${s.extraBeds ? `, ${s.extraBeds} Extra Bed` : ''}`}
             />
           </Card>
 
@@ -890,7 +1249,20 @@ export default function RoomDetails() {
           </View>
           <Card>
             <DetailRow label="Check-in Time" value={when(s.checkIn)} bold />
-            <DetailRow label="Expected Checkout" value={s.approxCheckOut ? when(s.approxCheckOut) : when(s.checkOut)} />
+            <DetailRow
+              label="Expected Checkout"
+              value={(() => {
+                const outVal = s.approxCheckOut || s.checkOut;
+                if (outVal && outVal !== '-') return when(outVal);
+                if (s.checkIn) {
+                  try {
+                    const dIn = new Date(String(s.checkIn).includes('T') ? s.checkIn : String(s.checkIn).replace(' ', 'T') + '+05:30').getTime();
+                    if (!isNaN(dIn)) return when(new Date(dIn + 24 * 3600 * 1000).toISOString());
+                  } catch (_) {}
+                }
+                return '-';
+              })()}
+            />
             <DetailRow label="Stay Duration" value={s.stayDuration || 'In-House'} />
             <DetailRow label="Booking Source" value={s.source || 'Walk-in'} bold />
             <DetailRow label="Meal Plan" value={s.mealPlan} />
@@ -901,42 +1273,177 @@ export default function RoomDetails() {
           {/* Section: All Receipts & Payment Collections */}
           <View style={styles.sectionHeaderRow}>
             <CreditCardIcon size={16} color={c.ink} />
-            <Text style={styles.sectionTitle}>Payment Receipts & Collections</Text>
+            <Text style={styles.sectionTitle}>Payment History & Collections ({paymentsList.length})</Text>
           </View>
-          <Card>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+
+          {paymentsList.length === 0 ? (
+            <Card>
+              <Text style={{ color: c.mute, textAlign: 'center', paddingVertical: 12 }}>
+                No payment history records found for this stay.
+              </Text>
+            </Card>
+          ) : (
+            paymentsList.map((p: any, idx: number) => {
+              const pAmt = Number(p.amount || 0);
+              const pMode = String(p.payment_mode || p.mode || 'Cash').toUpperCase();
+              const pDate = formatDT(p.created_at || p.realized_at || p.date || s?.checkIn);
+              const pCashier = p.cashier_name || p.cashier || staffName || s.checkedInBy || 'Front Desk Staff';
+              const pReceipt = p.receipt_no || p.receiptNo || ('RCP-' + (p.id || idx + 1));
+              const isRefund = String(p.payment_type || p.type || '').toLowerCase().includes('refund') || pAmt < 0;
+
+              const cardSurcharge = parseFloat(p.card_surcharge) || 0;
+              const upiTax = parseFloat(p.upi_tax) || 0;
+              const totalFee = cardSurcharge + upiTax;
+              const baseAmount = p.base_amount !== undefined
+                ? parseFloat(p.base_amount)
+                : Math.max(0, pAmt - totalFee);
+
+              let feePercentStr = '';
+              if (totalFee > 0 && baseAmount > 0) {
+                const pct = (totalFee / baseAmount) * 100;
+                feePercentStr = `${pct.toFixed(1).replace(/\.0$/, '')}%`;
+              }
+
+              const stage = getPaymentStageNote(p, idx, s?.checkIn);
+              const isPendingCheque = String(p.cheque_status || '').toLowerCase() === 'pending' || (pMode === 'CHEQUE' && !p.realized_at);
+
+              return (
+                <Card key={p.id ? `pay-${p.id}` : (pReceipt || idx)} style={{ marginBottom: 10 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, flex: 1, paddingRight: 8 }}>
+                      <Text style={{ fontSize: 14, fontWeight: '800', color: c.ink }}>
+                        Receipt: {pReceipt}
+                      </Text>
+                      <View style={{
+                        backgroundColor: stage.bg,
+                        borderColor: stage.border,
+                        borderWidth: 1,
+                        borderRadius: 6,
+                        paddingHorizontal: 8,
+                        paddingVertical: 2
+                      }}>
+                        <Text style={{ color: stage.color, fontSize: 11, fontWeight: '700' }}>
+                          {stage.label}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={{ flexShrink: 0 }}>
+                      <Badge
+                        text={isRefund ? 'REFUND' : (isPendingCheque ? 'PENDING' : 'REALIZED')}
+                        color={isRefund ? c.bad : (isPendingCheque ? '#D97706' : c.ok)}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.rowDivider} />
+
+                  <DetailRow label="Date & Time" value={pDate} bold />
+                  <DetailRow label="Accepted By" value={pCashier} bold />
+                  <DetailRow label="Payment Mode" value={pMode} bold />
+                  {p.utr_number ? <DetailRow label="UTR / Ref No" value={p.utr_number} /> : null}
+                  {p.cheque_no ? <DetailRow label="Cheque No" value={`${p.cheque_no} ${p.bank_name ? `(${p.bank_name})` : ''}`} /> : null}
+                  {p.card_digits ? <DetailRow label="Card Digits" value={`**** **** **** ${p.card_digits}`} /> : null}
+
+                  {totalFee > 0 ? (
+                    <>
+                      <DetailRow label="Amount (Without POS/MDR Fee)" value={money(baseAmount)} bold />
+                      {cardSurcharge > 0 ? (
+                        <DetailRow
+                          label={feePercentStr ? `+ Card / POS Fee (${feePercentStr})` : '+ Card / POS Fee'}
+                          value={`+ ${money(cardSurcharge)}`}
+                          color="#D97706"
+                          bold
+                        />
+                      ) : null}
+                      {upiTax > 0 ? (
+                        <DetailRow
+                          label={feePercentStr ? `+ UPI / MDR Fee (${feePercentStr})` : '+ UPI / MDR Fee'}
+                          value={`+ ${money(upiTax)}`}
+                          color="#D97706"
+                          bold
+                        />
+                      ) : null}
+                      <DetailRow
+                        label="Total Paid (With Fee)"
+                        value={isRefund ? `- ${money(Math.abs(pAmt))}` : money(pAmt)}
+                        color={isRefund ? c.bad : c.ok}
+                        bold
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <DetailRow
+                        label="Total Paid Amount"
+                        value={isRefund ? `- ${money(Math.abs(pAmt))}` : money(pAmt)}
+                        color={isRefund ? c.bad : c.ok}
+                        bold
+                      />
+                      {p.split_cash > 0 && p.split_cash < pAmt ? (
+                        <DetailRow label="Paid via Cash" value={money(p.split_cash)} />
+                      ) : null}
+                      {p.split_online > 0 && p.split_online < pAmt ? (
+                        <DetailRow label="Paid via Online UPI" value={money(p.split_online)} />
+                      ) : null}
+                      {p.split_card > 0 && p.split_card < pAmt ? (
+                        <DetailRow label="Paid via Card POS" value={money(p.split_card)} />
+                      ) : null}
+                      {p.split_cheque > 0 && p.split_cheque < pAmt ? (
+                        <DetailRow label="Paid via Cheque" value={money(p.split_cheque)} />
+                      ) : null}
+                    </>
+                  )}
+
+                  {p.notes && !String(p.notes).toLowerCase().startsWith('paid while checkin : ' + String(p.payment_mode || p.mode || '').toLowerCase()) ? (
+                    <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#F1F5F9' }}>
+                      <Text style={{ fontSize: 11, color: c.mute, fontStyle: 'italic' }}>
+                        Note: {p.notes}
+                      </Text>
+                    </View>
+                  ) : null}
+                </Card>
+              );
+            })
+          )}
+
+          {/* Total Realized Summary Banner */}
+          {paymentsList.length > 0 ? (
+            <View style={{
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              backgroundColor: '#F0FDF4',
+              padding: 12,
+              borderRadius: 10,
+              marginTop: 2,
+              marginBottom: 10,
+              borderWidth: 1,
+              borderColor: '#BBF7D0'
+            }}>
               <View>
-                <Text style={{ fontSize: 14, fontWeight: '800', color: c.ink }}>
-                  Advance Receipt: {s.advanceReceiptNo || ('RCP-' + s.id)}
+                <Text style={{ fontSize: 13, fontWeight: '800', color: '#166534' }}>
+                  Total Realized Payments ({paymentsList.length})
                 </Text>
-                <Text style={{ fontSize: 11, color: c.mute, marginTop: 2 }}>
-                  Collected at check-in · {when(s.checkIn)}
+                <Text style={{ fontSize: 11, color: '#15803D', marginTop: 2 }}>
+                  All receipts verified & realized
                 </Text>
               </View>
-              <Badge text="REALIZED" color={c.ok} />
+              <Text style={{ fontSize: 18, fontWeight: '900', color: '#15803D' }}>
+                {money(totalPaymentsPaid)}
+              </Text>
             </View>
+          ) : null}
 
-            <View style={styles.rowDivider} />
-
-            <DetailRow label="Total Paid Amount" value={money(s.paid)} color={c.ok} bold />
-            <DetailRow label="Payment Mode" value={s.paymentMode || 'Cash'} bold />
-            {s.splitCash > 0 ? <DetailRow label="Paid via Cash" value={money(s.splitCash)} /> : null}
-            {s.splitOnline > 0 ? <DetailRow label="Paid via Online UPI" value={money(s.splitOnline)} /> : null}
-            {s.splitCard > 0 ? <DetailRow label="Paid via Card POS" value={money(s.splitCard)} /> : null}
-            {s.splitCheque > 0 ? <DetailRow label="Paid via Cheque" value={money(s.splitCheque)} /> : null}
-
-            <View style={{ marginTop: 8 }}>
-              <Pressable
-                onPress={() => handleDownloadDoc('payment')}
-                style={({ pressed }) => [
-                  styles.receiptPillBtn,
-                  pressed && { opacity: 0.85 }
-                ]}
-              >
-                <Text style={styles.receiptPillText}>📄 Download Payment Summary PDF</Text>
-              </Pressable>
-            </View>
-          </Card>
+          <View style={{ marginBottom: 16 }}>
+            <Pressable
+              onPress={() => handleDownloadDoc('payment')}
+              style={({ pressed }) => [
+                styles.receiptPillBtn,
+                pressed && { opacity: 0.85 }
+              ]}
+            >
+              <Text style={styles.receiptPillText}>📄 Download Payment Summary PDF</Text>
+            </Pressable>
+          </View>
 
           {/* Section: Complete Financial Summary */}
           <View style={styles.sectionHeaderRow}>
@@ -963,12 +1470,21 @@ export default function RoomDetails() {
 
             <DetailRow label="Total Bill" value={money(s.total)} bold />
             <DetailRow label="Total Paid" value={money(s.paid)} color={c.ok} bold />
-            <DetailRow
-              label="Pending Balance Due"
-              value={money(s.pending)}
-              color={s.pending > 0 ? c.bad : c.ok}
-              bold
-            />
+            {s.refundDue > 0 ? (
+              <DetailRow
+                label="Refund Due to Guest"
+                value={money(s.refundDue)}
+                color={c.ok}
+                bold
+              />
+            ) : (
+              <DetailRow
+                label="Pending Balance Due"
+                value={money(s.pending)}
+                color={s.pending > 0 ? c.bad : c.ok}
+                bold
+              />
+            )}
           </Card>
 
           {/* Section: F&B Itemized Bills */}

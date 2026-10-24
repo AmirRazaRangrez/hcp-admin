@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-android/
 .expo/
 .DS_Store
 *.log
