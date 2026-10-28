@@ -1,190 +1,35 @@
 // All CRM access goes through here. EXISTING = routes found in the CRM audit (response shapes
 // are normalised defensively; they were not verified). OWNER = routes that do NOT exist in the
 // CRM yet; screens show a "not connected" state until they are added server-side.
-import axios from 'axios';import AsyncStorage from '@react-native-async-storage/async-storage';import {Platform} from 'react-native';import {useAuth} from '../store/auth';import {money, cleanRoomNumber} from '../lib/theme';import {DEMO_MODE,CLOUD_TUNNEL_URL} from '../config';import {makeDemoApi} from './demo';import {isInHouse,toStay} from '../lib/stay';
+import axios from 'axios';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
+import { useAuth } from '../store/auth';
+import { money, cleanRoomNumber } from '../lib/theme';
+import { DEMO_MODE, CLOUD_TUNNEL_URL } from '../config';
+import { makeDemoApi } from './demo';
+import { isInHouse, toStay } from '../lib/stay';
+import * as fb from './firebaseCloud';
+
+const num = (v: any) => (typeof v === 'number' ? v : parseFloat(String(v || 0).replace(/[^0-9.-]/g, '')) || 0);
 export { cleanRoomNumber };
 // ---- CRM safety: every path the app may touch. ROOM_BILLS = /hospitality/history (exists in the CRM; returns bookings, filtered below to checked-out stays). ----
 export const ROUTES={login:'/api/auth/login',stats:'/stats',analytics:'/manager/analytics',restaurantBills:'/restaurant/settled-bills',barBills:'/bar/settled-bills',
  restaurantOrder:'/restaurant/orders/',barOrder:'/bar/orders/',ROOM_BILLS:'/hospitality/history'};
-// Writes are only allowed to /owner/* and /store/* (store bills, vendor payments). Anything else that is not a GET is blocked inside the app.
-const writeAllowed=(m:string,u:string)=>m==='get'||u.startsWith('/owner/')||u.startsWith('/store/');
+// Writes are allowed to /owner/*, /store/*, /extra-expenses*, /staff*, /restaurant/*, /bar/*
+const writeAllowed=(m:string,u:string)=>m==='get'||u.startsWith('/owner/')||u.startsWith('/store/')||u.startsWith('/extra-expenses')||u.startsWith('/staff')||u.startsWith('/restaurant/')||u.startsWith('/bar/');
 const http=axios.create({timeout:4000});
 
-const SUPABASE_URL = 'https://hlwmsllmqfdxfmqulrat.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhsd21zbGxtcWZkeGZtcXVscmF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzc4MzgsImV4cCI6MjEwNTMxMzgzOH0.r7Nb8rEJTrZvprpf4G023nMY0suq2OqVGetG0I8esjk';
+// Supabase decommissioned: all cloud operations redirect to Firebase Firestore
+const SUPABASE_URL = '';
+const SUPABASE_ANON_KEY = '';
 
 async function fetchSupabaseStoreBills(status: 'live' | 'history' | 'all' = 'all') {
-  const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-  const filter = status === 'history' ? '&status=eq.FULL' : (status === 'all' ? '' : '&status=in.(PENDING,PARTLY)&pending_amount=gt.0');
-  const [bRes, vRes, pRes] = await Promise.all([
-    fetch(`${SUPABASE_URL}/rest/v1/store_bills?select=*${filter}&order=created_at.desc`, { headers: h }).then(r => r.json()).catch(() => []),
-    fetch(`${SUPABASE_URL}/rest/v1/store_vendors?select=*`, { headers: h }).then(r => r.json()).catch(() => []),
-    fetch(`${SUPABASE_URL}/rest/v1/store_vendor_payments?select=*&order=paid_at.desc`, { headers: h }).then(r => r.json()).catch(() => [])
-  ]);
-
-  const vendors = Array.isArray(vRes) ? vRes : [];
-  const vMap = new Map(vendors.map((v: any) => [v.id, v]));
-  const payments = Array.isArray(pRes) ? pRes : [];
-
-  const rawBills = Array.isArray(bRes) ? bRes : [];
-  const bills = rawBills.map((b: any) => {
-    const v = vMap.get(b.vendor_id);
-    const billPayments = payments.filter((p: any) => String(p.bill_id) === String(b.id));
-    const modeMatch = String(b.notes || '').match(/Mode:\s*([^,\n\|]+)/i);
-    const parsedMode = (b.payment_mode && b.payment_mode !== 'null' ? b.payment_mode : '') || (modeMatch ? modeMatch[1].trim() : '') || (billPayments[0]?.payment_mode) || 'Bank Transfer';
-    return {
-      ...b,
-      payment_mode: parsedMode,
-      vendor_name: v?.name || 'Store Vendor',
-      vendor_mobile: v?.mobile || '',
-      payments: billPayments
-    };
-  });
-
-  const partyMap: Record<string, any> = {};
-  for (const b of bills) {
-    if (!partyMap[b.vendor_id]) {
-      partyMap[b.vendor_id] = {
-        vendor_id: b.vendor_id,
-        vendor_name: b.vendor_name,
-        vendor_mobile: b.vendor_mobile,
-        total_bills: 0,
-        total_amount: 0,
-        total_paid: 0,
-        total_pending: 0,
-        bills: []
-      };
-    }
-    partyMap[b.vendor_id].total_bills += 1;
-    partyMap[b.vendor_id].total_amount += Number(b.total_amount) || 0;
-    partyMap[b.vendor_id].total_paid += Number(b.paid_amount) || 0;
-    partyMap[b.vendor_id].total_pending += Number(b.pending_amount) || 0;
-    partyMap[b.vendor_id].bills.push(b);
-  }
-
-  return {
-    success: true,
-    status,
-    bills,
-    partySummary: Object.values(partyMap),
-    paymentsHistory: payments.map((p: any) => {
-      const v = vMap.get(p.vendor_id);
-      return { ...p, vendor_name: v?.name, vendor_mobile: v?.mobile };
-    })
-  };
+  return fb.fetchStoreBills(status);
 }
 
-async function recordSupabaseStorePayment(body: any) {
-  const h = {
-    apikey: SUPABASE_ANON_KEY,
-    Authorization: 'Bearer ' + SUPABASE_ANON_KEY,
-    'Content-Type': 'application/json',
-    Prefer: 'return=representation'
-  };
-  const amount = parseFloat(body.payment_amount);
-  if (isNaN(amount) || amount <= 0) throw new Error('Valid payment amount is required');
-
-  if (body.bill_id) {
-    const bRes = await fetch(`${SUPABASE_URL}/rest/v1/store_bills?id=eq.${body.bill_id}&select=*`, { headers: h }).then(r => r.json());
-    const targetBill = Array.isArray(bRes) && bRes[0];
-    if (!targetBill) throw new Error('Bill not found in cloud database');
-
-    const newPaid = Math.round(((Number(targetBill.paid_amount) || 0) + amount) * 100) / 100;
-    const newPending = Math.max(0, Math.round(((Number(targetBill.total_amount) || 0) - newPaid) * 100) / 100);
-    const newStatus = (newPending === 0) ? 'FULL' : 'PARTLY';
-
-    await fetch(`${SUPABASE_URL}/rest/v1/store_bills?id=eq.${body.bill_id}`, {
-      method: 'PATCH',
-      headers: h,
-      body: JSON.stringify({ paid_amount: newPaid, pending_amount: newPending, status: newStatus })
-    });
-
-    await fetch(`${SUPABASE_URL}/rest/v1/store_vendor_payments`, {
-      method: 'POST',
-      headers: h,
-      body: JSON.stringify({
-        bill_id: targetBill.id,
-        vendor_id: targetBill.vendor_id,
-        payment_amount: amount,
-        payment_mode: body.payment_mode || 'Bank Transfer',
-        reference_no: body.reference_no || '',
-        paid_by: body.paid_by || 'Admin (Jaijeet sir)'
-      })
-    });
-
-    targetBill.paid_amount = newPaid;
-    targetBill.pending_amount = newPending;
-    targetBill.status = newStatus;
-
-    // Dispatch push notification to Storeman APK (topic: store_bills)
-    try {
-      fetch(`${SUPABASE_URL}/functions/v1/send-store-push`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON_KEY },
-        body: JSON.stringify({
-          title: newStatus === 'FULL' ? '✅ Bill Paid in Full' : '⚠️ Bill Paid Partly',
-          body: `₹${amount.toLocaleString('en-IN')} paid by Admin for ${targetBill.vendor_name || 'Vendor'}. Status: ${newStatus}`,
-          type: 'store_payment',
-          topic: 'store_bills',
-          data: { bill_id: targetBill.id, status: newStatus, amount }
-        })
-      }).catch(() => {});
-    } catch (_) {}
-
-    return { success: true, updatedBill: targetBill };
-  } else if (body.vendor_id) {
-    const bRes = await fetch(`${SUPABASE_URL}/rest/v1/store_bills?vendor_id=eq.${body.vendor_id}&pending_amount=gt.0&status=in.(PENDING,PARTLY)&order=created_at.asc`, { headers: h }).then(r => r.json());
-    const pendingBills = Array.isArray(bRes) ? bRes : [];
-    let rem = amount;
-    for (const pb of pendingBills) {
-      if (rem <= 0) break;
-      const curPending = Number(pb.pending_amount) || 0;
-      const curPaid = Number(pb.paid_amount) || 0;
-      const curTotal = Number(pb.total_amount) || 0;
-      const payThis = Math.min(curPending, rem);
-      const newPaid = Math.round((curPaid + payThis) * 100) / 100;
-      const newPending = Math.max(0, Math.round((curTotal - newPaid) * 100) / 100);
-      const newStatus = (newPending === 0) ? 'FULL' : 'PARTLY';
-
-      await fetch(`${SUPABASE_URL}/rest/v1/store_bills?id=eq.${pb.id}`, {
-        method: 'PATCH',
-        headers: h,
-        body: JSON.stringify({ paid_amount: newPaid, pending_amount: newPending, status: newStatus })
-      });
-      rem = Math.round((rem - payThis) * 100) / 100;
-    }
-
-    await fetch(`${SUPABASE_URL}/rest/v1/store_vendor_payments`, {
-      method: 'POST',
-      headers: h,
-      body: JSON.stringify({
-        bill_id: null,
-        vendor_id: body.vendor_id,
-        payment_amount: amount,
-        payment_mode: body.payment_mode || 'Bank Transfer',
-        reference_no: body.reference_no || '',
-        paid_by: body.paid_by || 'Admin (Jaijeet sir)'
-      })
-    });
-
-    // Dispatch push notification to Storeman APK for party payment
-    try {
-      fetch(`${SUPABASE_URL}/functions/v1/send-store-push`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON_KEY },
-        body: JSON.stringify({
-          title: '💰 Party Payment Recorded',
-          body: `₹${amount.toLocaleString('en-IN')} payment recorded by Admin.`,
-          type: 'store_payment',
-          topic: 'store_bills',
-          data: { vendor_id: body.vendor_id, amount }
-        })
-      }).catch(() => {});
-    } catch (_) {}
-
-    return { success: true };
-  }
-  throw new Error('Either bill_id or vendor_id is required');
+async function recordSupabaseStorePayment(body: any, sendPush: boolean = true) {
+  return fb.recordStorePayment(body, sendPush);
 }
 
 http.interceptors.request.use(cfg=>{const m=(cfg.method||'get').toLowerCase();if(!writeAllowed(m,cfg.url||''))return Promise.reject(new Error('Blocked: this app is read-only on the CRM.'));return cfg});
@@ -230,530 +75,27 @@ const ts = (s?: string) => {
 };
 export type Ev={id:string;type:string;tags:string[];title:string;body:string;created_at:string;dept:string;billId?:any;discount?:number;total?:number;guest?:string;room?:string;by?:string;meta?:any};
 async function fetchSupabaseOccupied() {
-  const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-  const [r, folios] = await Promise.all([
-    fetch(`${SUPABASE_URL}/rest/v1/active_occupancies?select=*&order=room_number.asc`, { headers: h }).then(x => x.json()).catch(() => []),
-    fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.room_folio&select=*`, { headers: h }).then(x => x.json()).catch(() => [])
-  ]);
-
-  const folioMap = new Map();
-  if (Array.isArray(folios)) {
-    folios.forEach((f: any) => {
-      let meta: any = {};
-      try { meta = JSON.parse(f.items_summary || '{}'); } catch (_) {}
-      const cleanNum = cleanRoomNumber(f.room_number);
-      folioMap.set(cleanNum, { ...f, meta });
-      folioMap.set(String(f.room_number).trim(), { ...f, meta });
-    });
-  }
-
-  if (Array.isArray(r) && r.length > 0) {
-    return r.map((o: any) => {
-      const roomNum = cleanRoomNumber(o.room_number);
-      const folioData = folioMap.get(roomNum) || folioMap.get(String(o.room_number).trim());
-      const meta = folioData?.meta || {};
-      const sc = meta.stayCalcNow || meta.stayCalcDeclared || null;
-
-      // Standard base rate by room type if not yet recorded
-      const rType = String(o.room_type || '').toLowerCase();
-      const baseDailyRate = rType.includes('pent') ? 4500 : (rType.includes('suit') ? 3500 : (rType.includes('deluxe') ? 2200 : 2400));
-
-      let stayNights = 1;
-      try {
-        const d1 = new Date(o.checkin_time || Date.now());
-        const d2 = new Date();
-        stayNights = Math.max(1, Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
-      } catch (_) {}
-
-      const roomCharge = Number(meta.roomCharge ?? o.total_room_charge ?? o.room_charge ?? folioData?.subtotal ?? sc?.roomCharge ?? (baseDailyRate * stayNights));
-      const tax = Number(meta.tax ?? folioData?.gst ?? sc?.roomGst ?? Math.round(roomCharge * 0.05));
-      const foodTotal = Number(meta.foodTotal ?? meta.restaurant ?? o.food_total ?? sc?.fnbTotal ?? 0);
-      const barTotal = Number(meta.barTotal || meta.bar || o.bar_total || 0);
-      const extra = Number(meta.extra || 0);
-      const discount = Number(meta.discount ?? o.discount_amount ?? sc?.discountAmount ?? 0);
-
-      const tot = Number(meta.grandTotal ?? meta.total ?? folioData?.grand_total ?? o.total_room_charge ?? sc?.grandTotal ?? (roomCharge + foodTotal + barTotal + extra));
-      const pd = Number(meta.paid ?? (folioData?.status === 'settled' ? tot : 0) ?? o.advance_payment ?? o.total_paid ?? o.paid ?? sc?.paid ?? tot);
-      const refundDue = Number(sc?.refundDue ?? Math.max(0, pd - tot));
-      const pending = Number(meta.pending ?? (tot > pd ? tot - pd : 0) ?? sc?.balanceDue ?? 0);
-
-      return {
-        id: String(o.booking_id || roomNum),
-        room: roomNum,
-        room_number: roomNum,
-        refundDue,
-        guest: o.guest_name || meta.guestName || 'In-House Guest',
-        mobile: o.guest_mobile || meta.mobile || '',
-        email: meta.email || o.guest_email || o.email || '',
-        guest_email: meta.email || o.guest_email || o.email || '',
-        aadharNumber: meta.aadharNumber || o.aadhar_number || '',
-        aadhar_number: meta.aadharNumber || o.aadhar_number || '',
-        id_number: meta.aadharNumber || o.aadhar_number || '',
-        docType: meta.docType || o.doc_type || 'Aadhaar Card',
-        doc_type: meta.docType || o.doc_type || 'Aadhaar Card',
-        address: meta.address || '',
-        dob: meta.dob || '',
-        type: o.room_type || 'Standard',
-        roomType: o.room_type || meta.roomType || 'Standard Room',
-        checkIn: o.checkin_time || meta.checkinTime,
-        approxCheckOut: (() => {
-          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
-          if (!exp && (o.checkin_time || meta.checkinTime)) {
-            try {
-              const ct = o.checkin_time || meta.checkinTime;
-              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
-              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
-            } catch (_) {}
-          }
-          return exp;
-        })(),
-        checkOut: (() => {
-          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
-          if (!exp && (o.checkin_time || meta.checkinTime)) {
-            try {
-              const ct = o.checkin_time || meta.checkinTime;
-              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
-              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
-            } catch (_) {}
-          }
-          return exp;
-        })(),
-        approx_checkout_time: (() => {
-          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
-          if (!exp && (o.checkin_time || meta.checkinTime)) {
-            try {
-              const ct = o.checkin_time || meta.checkinTime;
-              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
-              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
-            } catch (_) {}
-          }
-          return exp;
-        })(),
-        expectedCheckout: (() => {
-          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
-          if (!exp && (o.checkin_time || meta.checkinTime)) {
-            try {
-              const ct = o.checkin_time || meta.checkinTime;
-              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
-              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
-            } catch (_) {}
-          }
-          return exp;
-        })(),
-        checkoutTime: (() => {
-          let exp = meta.approxCheckout || o.approx_checkout_time || o.expected_checkout_time || '';
-          if (!exp && (o.checkin_time || meta.checkinTime)) {
-            try {
-              const ct = o.checkin_time || meta.checkinTime;
-              const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
-              if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
-            } catch (_) {}
-          }
-          return exp;
-        })(),
-        stayDuration: meta.stayCalcNow?.stayDurationStr || '',
-        total: tot,
-        paid: pd,
-        pending: pending,
-        roomCharge: roomCharge,
-        restaurant: foodTotal,
-        bar: barTotal,
-        extra: extra,
-        discount: discount,
-        tax: tax,
-        voucherNumber: meta.voucherNumber || folioData?.bill_no || (o.booking_id ? `260920-${o.booking_id}` : ''),
-        advanceReceiptNo: meta.advanceReceiptNo || (o.booking_id ? `RCP-260920-${o.booking_id}` : ''),
-        source: meta.source || o.booking_source || o.source || 'Walk-in',
-        checkedInBy: meta.checkedInBy || 'Front Desk',
-        paymentMode: meta.paymentMode || o.payment_mode || o.advance_payment_mode || 'Cash'
-      };
-    });
-  }
-  return [];
+  return fb.fetchOccupiedStays();
 }
 
 async function fetchSupabaseAvailable() {
-  try {
-    const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-    const [occ, checkouts] = await Promise.all([
-      fetchSupabaseOccupied().catch(() => []),
-      fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.room_checkout&select=*&order=created_at.desc&limit=100`, { headers: h }).then(r => r.json()).catch(() => [])
-    ]);
-
-    const occSet = new Set((occ || []).map((o: any) => cleanRoomNumber(o.room || o.room_number)));
-    
-    // Complete 40-room hotel directory
-    const ALL_ROOMS = [
-      '101', '102', '103', '104',
-      '201', '202', '203', '204', '205', '206', '207', '208', '209', '210', '211', '212',
-      '301', '302', '303', '304', '305', '306', '307', '308', '309', '310',
-      '401', '402', '403', '404', '405', '406', '407', '408', '409',
-      '501', '502', '503', '504', '505', '506'
-    ];
-
-    const checkoutMap = new Map();
-    if (Array.isArray(checkouts)) {
-      checkouts.forEach((c: any) => {
-        const rm = cleanRoomNumber(c.room_number);
-        if (!checkoutMap.has(rm)) {
-          let meta: any = {};
-          try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
-          checkoutMap.set(rm, {
-            bookingId: meta.bookingId || c.bill_no,
-            guestName: meta.guestName || meta.guest_name || 'Valued Guest',
-            mobile: meta.mobile || '',
-            checkoutTime: meta.checkoutTime || c.created_at,
-            totalPaid: Number(c.grand_total || meta.netSettle || 0),
-            totalRoomCharge: Number(c.subtotal || 0),
-            paymentMode: meta.payments?.[0]?.mode || 'Cash',
-            voucherNumber: c.bill_no,
-            checkedOutBy: c.settled_by || 'Staff',
-            payments: meta.payments || []
-          });
-        }
-      });
-    }
-
-    return ALL_ROOMS
-      .filter(rm => !occSet.has(rm))
-      .map(rm => {
-        const num = parseInt(rm, 10);
-        const roomType = num >= 500 ? 'Penthouse / Suite' : (num >= 400 ? 'Executive Room' : (num >= 300 ? 'Deluxe Room' : 'Standard Room'));
-        return {
-          id: rm,
-          room: rm,
-          room_number: rm,
-          room_type: roomType,
-          status: 'ready',
-          lastStay: checkoutMap.get(rm) || null
-        };
-      });
-  } catch (e) {
-    console.warn('[Supabase Available] fetch error:', e);
-    return [];
-  }
+  return fb.fetchAvailableRooms();
 }
 
 async function fetchSupabaseDailyAnalytics(startDate: string, endDate: string) {
-  try {
-    const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-    const url = startDate === endDate
-      ? `${SUPABASE_URL}/rest/v1/hotel_analytics?id=eq.${startDate}&select=*`
-      : `${SUPABASE_URL}/rest/v1/hotel_analytics?id=gte.${startDate}&id=lte.${endDate}&select=*`;
-    const rows = await fetch(url, { headers: h }).then(r => r.json()).catch(() => []);
-    if (Array.isArray(rows) && rows.length > 0) {
-      let rev = 0, cash = 0, upi = 0, card = 0, chkIn = 0, chkOut = 0;
-      rows.forEach((r: any) => {
-        rev += Number(r.today_revenue) || 0;
-        cash += Number(r.today_cash) || 0;
-        upi += Number(r.today_upi) || 0;
-        card += Number(r.today_card) || 0;
-        chkIn += Number(r.today_checkins) || 0;
-        chkOut += Number(r.today_checkouts) || 0;
-      });
-      const gst = Math.round(rev * 5 / 105 * 100) / 100;
-      const base = rev - gst;
-      return {
-        success: true,
-        stats: {
-          grossRevenue: rev,
-          totalRealized: rev,
-          totalExpenses: 0,
-          netProfit: rev,
-          cashInDrawer: cash,
-          totalCashInflow: cash,
-          totalCardInflow: card,
-          totalUpiInflow: upi,
-          gstCollections: gst,
-          totalGstCollections: gst,
-          netToHotel: base,
-          baseRevenue: base,
-          roomRevenue: rev,
-          restaurantRevenue: 0,
-          barRevenue: 0,
-          advancesCollected: 0
-        },
-        analytics: {
-          breakdown: {
-            hospitality: {
-              total: rev,
-              base,
-              gst,
-              cash,
-              card,
-              upi,
-              cheque: 0,
-              cheque_realized: 0
-            },
-            restaurant: { total: 0, cash: 0, upi: 0, card: 0, tax: 0, subtotal: 0, count: 0 },
-            bar: { total: 0, cash: 0, upi: 0, card: 0, tax: 0, subtotal: 0, count: 0 }
-          }
-        }
-      };
-    }
-  } catch (e) {
-    console.warn('[Analytics Cloud Fallback Error]', e);
-  }
-  return null;
+  return fb.fetchDailyAnalytics(startDate, endDate);
 }
 
 async function fetchSupabaseApprovals() {
-  const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timer = controller ? setTimeout(() => controller.abort(), 2500) : null;
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.discount_approval&order=created_at.desc`,
-    { headers: h, signal: controller?.signal }
-  ).then(x => x.json()).catch(() => []).finally(() => { timer && clearTimeout(timer); });
-
-  if (!Array.isArray(r)) return { pending: [], history: [] };
-
-  const pending: any[] = [];
-  const history: any[] = [];
-
-  for (const row of r) {
-    let meta: any = {};
-    try { meta = JSON.parse(row.items_summary || '{}'); } catch {}
-    const isPending = (row.status || 'pending').toLowerCase() === 'pending';
-    const isApproved = (row.status || '').toLowerCase() === 'approved';
-    const rNum = row.room_number || meta.room_number || '';
-    const rCount = Number(meta.room_count) || (rNum && rNum.includes(',') ? rNum.split(',').length : 1);
-    const item = {
-      id: meta.approval_id || (row.bill_no ? row.bill_no.replace('APP-', '') : row.id),
-      cloud_id: row.id,
-      dept: 'Room',
-      room_number: rNum,
-      room_count: rCount,
-      rooms_list: meta.rooms_list || null,
-      guest_name: meta.guest_name || '',
-      members: meta.members || '',
-      expected_checkout: meta.expected_checkout || '',
-      meal_plan: meta.meal_plan || '',
-      current_total: Number(meta.current_total || 0),
-      discount: Number(meta.discount || 0),
-      discount_pct: Number(meta.discount_pct || 0),
-      final_amount: Number(row.grand_total || meta.final_amount || 0),
-      requested_by: meta.requested_by || row.settled_by || 'Reception Staff',
-      requested_at: row.created_at,
-      status: isPending ? 'PENDING' : isApproved ? 'APPROVED' : 'REJECTED',
-      reason: meta.reason || ''
-    };
-    if (isPending) pending.push(item);
-    else history.push(item);
-  }
-
-  return { pending, history };
+  return fb.fetchApprovals();
 }
 
 async function actSupabaseApproval(id: any, status: 'approved' | 'rejected') {
-  const h = {
-    apikey: SUPABASE_ANON_KEY,
-    Authorization: 'Bearer ' + SUPABASE_ANON_KEY,
-    'Content-Type': 'application/json',
-    Prefer: 'return=representation'
-  };
-  const billNo = String(id).startsWith('APP-') ? String(id) : 'APP-' + id;
-  await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?bill_no=eq.${billNo}`, {
-    method: 'PATCH',
-    headers: h,
-    body: JSON.stringify({ status, settled_by: 'Admin' })
-  }).catch(() => null);
-  await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?id=eq.${id}`, {
-    method: 'PATCH',
-    headers: h,
-    body: JSON.stringify({ status, settled_by: 'Admin' })
-  }).catch(() => null);
+  return fb.actApproval(id, status);
 }
 
 async function fetchSupabaseActivity(): Promise<Ev[]> {
-  const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-  const out: Ev[] = [];
-
-  const [occRes, chargesRes, storeRes, payRes] = await Promise.allSettled([
-    fetch(`${SUPABASE_URL}/rest/v1/active_occupancies?select=*&order=checkin_time.desc`, { headers: h }).then(r => r.json()),
-    fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?select=*&order=created_at.desc&limit=50`, { headers: h }).then(r => r.json()),
-    fetch(`${SUPABASE_URL}/rest/v1/store_bills?select=*&order=created_at.desc&limit=30`, { headers: h }).then(r => r.json()),
-    fetch(`${SUPABASE_URL}/rest/v1/store_vendor_payments?select=*&order=paid_at.desc&limit=30`, { headers: h }).then(r => r.json())
-  ]);
-
-  // 1. Live Occupied Rooms Check-ins
-  if (occRes.status === 'fulfilled' && Array.isArray(occRes.value)) {
-    occRes.value.forEach((o: any) => {
-      const roomNum = cleanRoomNumber(o.room_number);
-      out.push({
-        id: `in:${roomNum}`,
-        type: 'checkin',
-        tags: ['checkin', 'stay', 'all'],
-        dept: 'Room',
-        billId: undefined,
-        title: `Check-in · Room ${roomNum}`,
-        body: `${o.guest_name || 'Guest'} · ${o.room_type || 'Standard'}`,
-        created_at: o.checkin_time || o.updated_at || new Date().toISOString(),
-        guest: o.guest_name,
-        room: roomNum
-      });
-    });
-  }
-
-  // 2. Room Charges & Approvals
-  if (chargesRes.status === 'fulfilled' && Array.isArray(chargesRes.value)) {
-    chargesRes.value.forEach((c: any) => {
-      // Skip internal state sync rows
-      if (c.department === 'fb_live_state' || c.department === 'cloud_tunnel_url') {
-        return;
-      }
-      if (c.department === 'discount_approval') {
-        let meta: any = {};
-        try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
-        const isApp = (c.status || '').toLowerCase() === 'approved';
-        const isRej = (c.status || '').toLowerCase() === 'rejected';
-        const stLabel = isApp ? 'APPROVED' : isRej ? 'REJECTED' : 'PENDING APPROVAL';
-        const roomStr = c.room_number || meta.room_number || '';
-        const roomCount = Number(meta.room_count) || (roomStr && roomStr.includes(',') ? roomStr.split(',').length : 1);
-        const roomLabel = roomStr.startsWith('Room') ? roomStr : (roomCount > 1 ? `Rooms ${roomStr}` : `Room ${roomStr}`);
-        out.push({
-          id: `app:${c.id}`,
-          type: 'discount',
-          tags: ['discounts', 'approvals', 'all'],
-          dept: 'Room',
-          billId: c.bill_no,
-          discount: Number(meta.discount || 0),
-          total: Number(c.grand_total || meta.final_amount || 0),
-          title: `Discount Request · ${roomLabel}`,
-          body: `${meta.guest_name || 'Guest'} · ₹${meta.discount || 0} (${meta.discount_pct || 0}%) · ${stLabel}`,
-          created_at: c.created_at,
-          guest: meta.guest_name,
-          room: String(c.room_number || meta.room_number || ''),
-          by: c.settled_by
-        });
-      } else if (c.department === 'room_checkout') {
-        let meta: any = {};
-        try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
-        const guestName = meta.guestName || meta.guest_name || 'Guest';
-        const total = Number(c.grand_total || meta.netSettle || meta.total || 0);
-        const rooms = c.room_number || meta.roomNumber || (Array.isArray(meta.roomNumbers) ? meta.roomNumbers.join(', ') : '');
-        out.push({
-          id: `out:${c.id}`,
-          type: 'checkout',
-          tags: ['checkout', 'bills', 'payments', 'stay', 'all'],
-          dept: 'Room',
-          billId: c.bill_no || c.id,
-          title: `Check-out · Room ${rooms}`,
-          body: `${guestName} · Settled ${money(total)} · by ${c.settled_by || meta.checkedOutBy || 'Staff'}`,
-          created_at: c.created_at,
-          total,
-          guest: guestName,
-          room: rooms,
-          by: c.settled_by || meta.checkedOutBy,
-          meta
-        });
-      } else if (c.department === 'room_folio') {
-        let meta: any = {};
-        try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
-        const guestName = meta.guestName || 'Guest';
-        const paid = Number(meta.paid || 0);
-        const pending = Number(meta.pending || 0);
-        const grandTotal = Number(c.grand_total || meta.grandTotal || meta.total || 0);
-        const pMode = meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH';
-
-        if (paid > 0) {
-          out.push({
-            id: `folio-pay:${c.id}`,
-            type: 'payments',
-            tags: ['payments', 'stay', 'all'],
-            dept: 'Room',
-            billId: c.bill_no || c.id,
-            total: paid,
-            title: `Advance Payment · Room ${c.room_number}`,
-            body: `${guestName} · Paid: ${money(paid)}${pending > 0 ? ' (Due: ' + money(pending) + ')' : ' (Settled)'} · ${pMode}`,
-            created_at: c.created_at,
-            guest: guestName,
-            room: String(c.room_number),
-            by: c.settled_by || meta.checkedInBy
-          });
-        }
-      } else {
-        // Only show settled to room (paid / pending) bills of F&B
-        const roomNum = String(c.room_number || '').trim();
-        if (!roomNum || roomNum === 'null' || roomNum === 'undefined' || roomNum === '0') {
-          return;
-        }
-        const dept = (c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1);
-        let summaryText = c.items_summary || 'Food & Beverage';
-        if (typeof summaryText === 'string') {
-          const st = summaryText.trim();
-          if (st.startsWith('[') || st.startsWith('{')) {
-            try {
-              const parsed = JSON.parse(st);
-              if (Array.isArray(parsed)) {
-                summaryText = parsed.map((item: any) => {
-                  let itName = item.name || item.item_name || 'Item';
-                  if (typeof itName === 'string' && itName.trim().startsWith('{')) {
-                    try { const inner = JSON.parse(itName); itName = inner.name || inner.item_name || 'Item'; } catch {}
-                  }
-                  return `${itName} × ${item.qty || item.quantity || 1}`;
-                }).join(', ');
-              } else if (parsed && typeof parsed === 'object') {
-                summaryText = parsed.items || parsed.description || parsed.name || (parsed.guestName ? `${parsed.guestName} order` : `${dept} Order`);
-              }
-            } catch {}
-          }
-        }
-        const isPaid = (c.status || '').toLowerCase() === 'paid' || (c.status || '').toLowerCase() === 'settled';
-        out.push({
-          id: `charge:${c.id}`,
-          type: 'bills',
-          tags: ['bills', 'fnb', ...(isPaid ? ['payments'] : []), 'all'],
-          dept,
-          billId: c.bill_no || c.id,
-          total: Number(c.grand_total || 0),
-          title: `${dept} charge · Room ${c.room_number}`,
-          body: `${summaryText} · ${money(Number(c.grand_total || 0))}`,
-          created_at: c.created_at,
-          room: String(c.room_number),
-          by: c.settled_by
-        });
-      }
-    });
-  }
-
-  // 3. Store Bills
-  if (storeRes.status === 'fulfilled' && Array.isArray(storeRes.value)) {
-    storeRes.value.forEach((b: any) => {
-      out.push({
-        id: `store:${b.id}`,
-        type: 'bills',
-        tags: ['bills', 'store', 'all'],
-        dept: 'Store',
-        billId: b.id,
-        total: Number(b.total_amount || 0),
-        title: `Store Bill #${b.bill_number || b.id}`,
-        body: `Total: ${money(Number(b.total_amount || 0))} · Status: ${b.status || 'PENDING'}`,
-        created_at: b.created_at,
-        by: b.created_by
-      });
-    });
-  }
-
-  // 4. Store Vendor Payments
-  if (payRes.status === 'fulfilled' && Array.isArray(payRes.value)) {
-    payRes.value.forEach((p: any) => {
-      out.push({
-        id: `pay:${p.id}`,
-        type: 'payments',
-        tags: ['payments', 'store', 'all'],
-        dept: 'Store',
-        billId: p.bill_id,
-        total: Number(p.payment_amount || 0),
-        title: `Store Payment · ${money(Number(p.payment_amount || 0))}`,
-        body: `${p.payment_mode || 'Bank'} · Paid by ${p.paid_by || 'Admin'}`,
-        created_at: p.paid_at || p.created_at || new Date().toISOString(),
-        by: p.paid_by
-      });
-    });
-  }
-
-  return out.sort((a, b) => ts(b.created_at) - ts(a.created_at));
+  return fb.fetchActivity();
 }
 
 async function feed(): Promise<Ev[]> {
@@ -959,74 +301,9 @@ const realApi={
        return out;
      }
    } catch {}
-   try {
-     const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-     const filter = p.from_date ? `&created_at=gte.${p.from_date}T00:00:00` : '';
-     const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?select=*${filter}&order=created_at.desc&limit=60`, { headers: h }).then(x => x.json()).catch(() => []);
-     if (Array.isArray(r) && r.length > 0) {
-        const out = r.map((c: any) => {
-          const isFolio = c.department === 'room_folio';
-          const dept = isFolio ? 'Room' : ((c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1));
-          let meta: any = {};
-          if (isFolio || (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('{'))) {
-            try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
-          }
-
-          let itemsArr: any[] = [];
-          if (isFolio) {
-            const rc = Number(meta.roomCharge || 0);
-            if (rc > 0) itemsArr.push({ name: `Room Tariff (${meta.roomType || 'Stay'})`, qty: 1, price: rc });
-            const ft = Number(meta.foodTotal || meta.restaurant || 0);
-            if (ft > 0) itemsArr.push({ name: 'Restaurant / Food Charges', qty: 1, price: ft });
-            const bt = Number(meta.barTotal || meta.bar || 0);
-            if (bt > 0) itemsArr.push({ name: 'Bar Lounge Charges', qty: 1, price: bt });
-            const ex = Number(meta.extra || 0);
-            if (ex > 0) itemsArr.push({ name: 'Extra Bed / Service', qty: 1, price: ex });
-            if (itemsArr.length === 0) {
-              itemsArr.push({ name: `Room Tariff (${meta.roomType || 'Stay'})`, qty: 1, price: Number(c.grand_total || meta.grandTotal || meta.total || 0) });
-            }
-          } else if (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('[')) {
-            try {
-              const rawItems = JSON.parse(c.items_summary);
-              if (Array.isArray(rawItems)) {
-                itemsArr = rawItems.map((it: any) => {
-                  let itName = it.name || it.item_name || 'Item';
-                  if (typeof itName === 'string' && itName.trim().startsWith('{')) {
-                    try { const inner = JSON.parse(itName); itName = inner.name || inner.item_name || 'Item'; } catch {}
-                  }
-                  return { name: itName, qty: Number(it.qty || it.quantity || 1), price: Number(it.price || 0) };
-                });
-              }
-            } catch {}
-          }
-          if (itemsArr.length === 0) {
-            itemsArr = [{ name: c.items_summary || (dept + ' Order'), qty: 1, price: Number(c.grand_total || 0) }];
-          }
-
-          const guestName = isFolio ? (meta.guestName || `Room ${c.room_number}`) : `Room ${c.room_number}`;
-          const orderNum = isFolio ? (meta.voucherNumber || c.bill_no || `R-${c.id}`) : (c.bill_no || `RES-${c.id}`);
-          const total = Number(c.grand_total || meta.grandTotal || meta.total || 0);
-          const subtotal = Number(isFolio ? (meta.roomCharge || c.subtotal || total) : (c.subtotal || total));
-          const discount = Number(isFolio ? (meta.discount || 0) : 0);
-          const pMode = isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : (c.payment_mode || 'room_folio');
-          const isPaid = isFolio ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0) : (c.status === 'pending' || c.status === 'unpaid' ? 0 : 1);
-
-          return {
-            id: c.id,
-            dept,
-            order_number: orderNum,
-            room_number: c.room_number,
-            total,
-            subtotal,
-            tax: Number(c.gst || meta.tax || 0),
-            discount,
-            is_paid: isPaid,
-            created_at: c.created_at,
-            customer_name: guestName,
-            payment_mode: pMode,
-            items_json: JSON.stringify(itemsArr)
-          };
-        });
+    try {
+      const out = await fb.fetchRoomChargesInbox(p.from_date);
+      if (out && out.length > 0) {
         out.forEach((b: any) => {
           billCache.set(b.dept + ':' + b.id, b);
           if (b.order_number) {
@@ -1042,8 +319,8 @@ const realApi={
           }
         });
         return out;
-     }
-   } catch {}
+      }
+    } catch {}
    return [];
  },
  occupied: async () => {
@@ -1101,34 +378,7 @@ const realApi={
       if (out.length > 0) return out.sort((x, y) => ts(y.created_at) - ts(x.created_at));
     } catch {}
     try {
-      const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?room_number=eq.${encodeURIComponent(stay.room)}&select=*`, { headers: h }).then(x => x.json()).catch(() => []);
-      if (Array.isArray(r) && r.length > 0) {
-        const stayCheckinMs = stay?.checkIn ? ts(stay.checkIn) : 0;
-        const validCharges = r.filter((c: any) => {
-          const dept = String(c.department || '').toLowerCase();
-          if (dept.includes('discount') || dept === 'discount_approval' || dept === 'room_folio' || dept === 'fb_live_state') return false;
-          if (stayCheckinMs > 0 && c.created_at) {
-            const chargeMs = new Date(c.created_at).getTime();
-            if (chargeMs < stayCheckinMs - 6e4) return false;
-          }
-          return true;
-        });
-        return validCharges.map((c: any) => ({
-          id: c.order_id || c.id,
-          dept: (c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1),
-          order_number: c.bill_no || ('RES-' + (c.order_id || c.id)),
-          room_number: c.room_number,
-          total: Number(c.grand_total) || 0,
-          subtotal: Number(c.subtotal) || 0,
-          tax: Number(c.gst) || 0,
-          discount: 0,
-          is_paid: c.status === 'pending' || c.status === 'unpaid' ? 0 : 1,
-          created_at: c.created_at,
-          customer_name: stay.guest || 'In-House Guest',
-          items_json: (c.items_summary && String(c.items_summary).startsWith('[')) ? c.items_summary : JSON.stringify([{ name: c.items_summary || 'Food & Beverage', qty: 1, price: Number(c.grand_total) || 0 }])
-        }));
-      }
+      return await fb.fetchStayCharges(stay);
     } catch {}
     return [];
   },
@@ -1141,11 +391,9 @@ const realApi={
         // If local has 0 paid or missing guest contact, check cloud folio to ensure latest multi-terminal sync
         if (!localF.room?.email || Number(localF.summary?.advancePaid || 0) === 0) {
           try {
-            const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-            const cFolio = await fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanRoomNumber(id)) + '&department=eq.room_folio&order=created_at.desc&limit=1', { headers: h }).then(r => r.json()).catch(() => []);
-            if (Array.isArray(cFolio) && cFolio[0]) {
-              let cMeta: any = {};
-              try { cMeta = JSON.parse(cFolio[0].items_summary || '{}'); } catch {}
+            const cFolio = await fb.fetchFolioByRoom(id);
+            if (cFolio) {
+              const cMeta = cFolio.meta || {};
               if (cMeta.email && !localF.room.email) localF.room.email = cMeta.email;
               if (cMeta.aadharNumber && !localF.room.aadhar_number) localF.room.aadhar_number = cMeta.aadharNumber;
               if (cMeta.address && !localF.room.address) localF.room.address = cMeta.address;
@@ -1171,9 +419,10 @@ const realApi={
       }
     } catch {}
 
-    // 1b. Check if this is a checkout stay from local CRM history
-    try {
-      const histRes = await sget(ROUTES.ROOM_BILLS + '/' + id);
+    // 1b. Check if this is a checkout stay from local CRM history (only if explicitly requested for checkout)
+    if (String(id).startsWith('CO-') || String(id).startsWith('out:') || String(id).startsWith('co_')) {
+      try {
+        const histRes = await sget(ROUTES.ROOM_BILLS + '/' + id);
       const rec = histRes?.data?.records?.[0] || histRes?.data?.history?.[0] || histRes?.data?.record || histRes?.data;
       if (rec && (rec.guest_name || rec.room_number || rec.rooms)) {
         const totalAdults = (rec.adults_male || 0) + (rec.adults_female || 0) + (rec.adults_other || 0) || rec.adults || 1;
@@ -1235,188 +484,24 @@ const realApi={
         };
       }
     } catch {}
+  }
 
-    // 2. Direct Cloud Supabase fallback (works on 4G/5G/any remote network)
+    // 2. Direct Cloud Firebase fallback (works on 4G/5G/any remote network)
     try {
-      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      const timeoutTimer = controller ? setTimeout(() => controller.abort(), 8000) : null;
-      const signal = controller?.signal;
-      const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-      const cleanId = String(id).trim();
-      const [occRows, folioRows, chargeRows] = await Promise.all([
-        fetch(SUPABASE_URL + '/rest/v1/active_occupancies?or=(room_number.eq.' + encodeURIComponent(cleanId) + ',booking_id.eq.' + encodeURIComponent(cleanId) + ')&limit=1', { headers: h, signal }).then(r => r.json()).catch(() => []),
-        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=eq.room_folio&order=created_at.desc&limit=1', { headers: h, signal }).then(r => r.json()).catch(() => []),
-        fetch(SUPABASE_URL + '/rest/v1/room_charges_inbox?room_number=eq.' + encodeURIComponent(cleanId) + '&department=in.(restaurant,bar)&order=created_at.desc', { headers: h, signal }).then(r => r.json()).catch(() => [])
-      ]).finally(() => { if (timeoutTimer) clearTimeout(timeoutTimer); });
-
-      const occ = Array.isArray(occRows) && occRows[0] ? occRows[0] : null;
-
-      // 2b. If not in active_occupancies, check for persistent cloud checkout record
-      if (!occ) {
-        const coRes = await fetch(
-          `${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.room_checkout&or=(room_number.ilike.*${encodeURIComponent(cleanId)}*,bill_no.eq.${encodeURIComponent(cleanId)},id.eq.${encodeURIComponent(cleanId)})&order=created_at.desc&limit=1`,
-          { headers: h, signal }
-        ).then(r => r.json()).catch(() => []);
-
-        const coRow = Array.isArray(coRes) && coRes[0] ? coRes[0] : null;
-        if (coRow) {
-          let coMeta: any = {};
-          try { coMeta = JSON.parse(coRow.items_summary || '{}'); } catch {}
-          return {
-            isCheckout: true,
-            status: 'checked_out',
-            stayStatus: 'CHECKED_OUT',
-            room: {
-              id: coMeta.bookingId || coRow.id,
-              room_number: coRow.room_number || coMeta.roomNumber || cleanId,
-              room_type: 'Standard Room',
-              guest_name: coMeta.guestName || 'Guest',
-              mobile: coMeta.mobile || '',
-              adults: coMeta.adults || 1,
-              children: coMeta.children || 0,
-              meal_plan: coMeta.mealPlan || 'without_breakfast',
-              checkin_time: coMeta.checkinTime,
-              actual_checkout_time: coMeta.checkoutTime || coRow.created_at,
-              checked_in_by: coMeta.checkedInBy || 'Front Desk',
-              checked_out_by: coMeta.checkedOutBy || coRow.settled_by || 'Staff',
-              room_count: coMeta.roomCount || 1,
-              room_numbers: coMeta.roomNumber || coRow.room_number,
-              payments: coMeta.payments || []
-            },
-            guestName: coMeta.guestName || 'Guest',
-            guest: coMeta.guestName || 'Guest',
-            mobile: coMeta.mobile || '',
-            adults: coMeta.adults || 1,
-            children: coMeta.children || 0,
-            mealPlan: coMeta.mealPlan || 'without_breakfast',
-            roomCount: coMeta.roomCount || 1,
-            roomNumber: coMeta.roomNumber || coRow.room_number || cleanId,
-            checkIn: coMeta.checkinTime,
-            checkOut: coMeta.checkoutTime || coRow.created_at,
-            checkedInBy: coMeta.checkedInBy || 'Front Desk',
-            checkedOutBy: coMeta.checkedOutBy || coRow.settled_by || 'Staff',
-            payments: coMeta.payments || [],
-            restaurantOrders: [],
-            barOrders: [],
-            summary: {
-              grandTotal: Number(coRow.grand_total || coMeta.netSettle || 0),
-              advancePaid: Number(coRow.grand_total || coMeta.netSettle || 0),
-              balanceDue: 0
-            }
-          };
-        }
-      }
-
-      const fRow = Array.isArray(folioRows) && folioRows[0] ? folioRows[0] : null;
-      let meta: any = {};
-      try { meta = JSON.parse(fRow?.items_summary || '{}'); } catch (_) {}
-
-      const charges = Array.isArray(chargeRows) ? chargeRows : [];
-      const restaurantOrders = charges.filter((c: any) => String(c.department).toLowerCase() === 'restaurant').map((c: any) => ({
-        id: c.order_id || c.id,
-        order_number: c.bill_no || ('RES-' + (c.order_id || c.id)),
-        room_number: c.room_number,
-        total: Number(c.grand_total) || 0,
-        subtotal: Number(c.subtotal) || 0,
-        tax: Number(c.gst) || 0,
-        is_paid: c.status === 'pending' || c.status === 'unpaid' ? 0 : 1,
-        items_json: c.items_summary && String(c.items_summary).startsWith('[') ? c.items_summary : JSON.stringify([{ name: c.items_summary || 'Restaurant Order', qty: 1, price: Number(c.grand_total) || 0 }]),
-        created_at: c.created_at,
-        dept: 'Restaurant'
-      }));
-
-      const barOrders = charges.filter((c: any) => String(c.department).toLowerCase() === 'bar').map((c: any) => ({
-        id: c.order_id || c.id,
-        order_number: c.bill_no || ('BAR-' + (c.order_id || c.id)),
-        room_number: c.room_number,
-        total: Number(c.grand_total) || 0,
-        subtotal: Number(c.subtotal) || 0,
-        tax: Number(c.gst) || 0,
-        is_paid: c.status === 'pending' || c.status === 'unpaid' ? 0 : 1,
-        items_json: c.items_summary && String(c.items_summary).startsWith('[') ? c.items_summary : JSON.stringify([{ name: c.items_summary || 'Bar Order', qty: 1, price: Number(c.grand_total) || 0 }]),
-        created_at: c.created_at,
-        dept: 'Bar Lounge'
-      }));
-
-      const sc = meta.stayCalcNow || meta.stayCalcDeclared || null;
-      const foodTotal = restaurantOrders.reduce((sum, o) => sum + o.total, 0) || Number(sc?.fnbTotal || meta.foodTotal || meta.restaurant || 0);
-      const barTotal = barOrders.reduce((sum, o) => sum + o.total, 0) || Number(meta.barTotal || meta.bar || 0);
-
-      let stayNights = 1;
-      try {
-        const cin = occ?.checkin_time || meta.checkinTime;
-        if (cin) {
-          stayNights = Math.max(1, Math.ceil((Date.now() - new Date(cin).getTime()) / (24 * 3600 * 1000)));
-        }
-      } catch (_) {}
-      const rType = String(occ?.room_type || meta.roomType || '').toLowerCase();
-      const baseDaily = rType.includes('pent') ? 4500 : (rType.includes('suit') ? 3500 : (rType.includes('plus') ? 2800 : (rType.includes('deluxe') ? 2200 : 2350)));
-      const fallbackRoomCharge = Math.round(baseDaily * stayNights * 1.05);
-
-      const roomCharge = Number(sc?.roomCharge ?? meta.roomCharge ?? fRow?.subtotal ?? fallbackRoomCharge);
-      const grandTotal = Number(sc?.grandTotal ?? meta.grandTotal ?? meta.total ?? fRow?.grand_total ?? (roomCharge + foodTotal + barTotal));
-      const paid = Number(sc?.paid ?? meta.paid ?? (fRow?.status === 'settled' ? grandTotal : null) ?? occ?.total_paid ?? occ?.advance_payment ?? 0);
-      const refundDue = Number(sc?.refundDue ?? Math.max(0, paid - grandTotal));
-      const pending = Number(sc?.balanceDue ?? Math.max(0, grandTotal - paid));
-
-      return {
-        room: {
-          id: occ?.room_id || 429,
-          room_number: cleanRoomNumber(cleanId),
-          room_type: occ?.room_type || meta.roomType || 'Executive Room',
-          guest_name: occ?.guest_name || meta.guestName || 'In-House Guest',
-          mobile: occ?.guest_mobile || meta.mobile || '',
-          email: meta.email || occ?.guest_email || '',
-          aadhar_number: meta.aadharNumber || occ?.aadhar_number || '',
-          doc_type: meta.docType || occ?.doc_type || 'Aadhaar Card',
-          address: meta.address || '',
-          dob: meta.dob || '',
-          checkin_time: occ?.checkin_time || meta.checkinTime,
-          approx_checkout_time: (() => {
-            let exp = meta.approxCheckout || occ?.approx_checkout_time || occ?.expected_checkout_time || '';
-            if (!exp && (occ?.checkin_time || meta.checkinTime)) {
-              try {
-                const ct = occ?.checkin_time || meta.checkinTime;
-                const dIn = new Date(String(ct).includes('T') ? ct : String(ct).replace(' ', 'T') + '+05:30').getTime();
-                if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
-              } catch (_) {}
-            }
-            return exp;
-          })(),
-          total_room_charge: roomCharge,
-          total_paid: paid,
-          voucher_number: meta.voucherNumber || '',
-          advance_receipt_no: meta.advanceReceiptNo || '',
-          advance_payment_mode: meta.paymentMode || 'Cash',
-          booking_source: meta.source || 'Walk-in',
-          checked_in_by: meta.checkedInBy || 'Front Desk',
-          adults: meta.adults || (Number(meta.adultsMale || 1) + Number(meta.adultsFemale || 0)),
-          adults_male: meta.adultsMale || 1,
-          adults_female: meta.adultsFemale || 0,
-          payments: meta.payments || (paid > 0 ? [{ amount: paid, mode: meta.paymentMode || 'Cash', receiptNo: meta.advanceReceiptNo || 'CR01', cashier: meta.checkedInBy || 'Staff', date: meta.checkinTime }] : [])
-        },
-        restaurantOrders,
-        barOrders,
-        payments: meta.payments || (paid > 0 ? [{ amount: paid, mode: meta.paymentMode || 'Cash', receiptNo: meta.advanceReceiptNo || 'CR01', cashier: meta.checkedInBy || 'Staff', date: meta.checkinTime }] : []),
-        summary: {
-          roomCharge,
-          foodTotal,
-          barTotal,
-          fnbTotal: foodTotal + barTotal,
-          grandTotal,
-          advancePaid: paid,
-          balanceDue: pending,
-          refundDue,
-          stayCalcNow: sc
-        }
-      };
+      const fbStay = await fb.fetchStayDetails(id);
+      if (fbStay) return fbStay;
     } catch (e) {
       console.warn('[client.ts roomFolio cloud fallback notice]', e);
     }
     return null;
   },
 editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.toLowerCase()}/${id}`,body).then(r=>r.data)),
- deleteBill:(dept:string,id:any)=>owner(()=>http.delete(`/owner/bills/${dept.toLowerCase()}/${id}`).then(r=>r.data)),
+  deleteBill: (dept: string, id: any) => {
+    const d = String(dept || '').toLowerCase().trim();
+    const cleanDept = d.includes('bar') ? 'bar' : d.includes('restaurant') ? 'restaurant' : 'room';
+    const cleanId = String(id || '').replace(/^#/, '').trim();
+    return owner(() => http.delete(`/owner/bills/${cleanDept}/${cleanId}`).then(r => r.data));
+  },
  order: async (dept: string, id: any) => {
    const cleanId = String(id || '').replace(/^#/, '').trim();
    const dNorm = (dept || '').toLowerCase();
@@ -1454,74 +539,15 @@ editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.
      }
    } catch {}
 
-   // 3. Fallback: Query Supabase Cloud room_charges_inbox
-   try {
-     const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-     const r = await fetch(
-       `${SUPABASE_URL}/rest/v1/room_charges_inbox?or=(bill_no.eq.${encodeURIComponent(cleanId)},id.eq.${encodeURIComponent(cleanId)},order_id.eq.${encodeURIComponent(cleanId)})&limit=1`,
-       { headers: h }
-     ).then(x => x.json()).catch(() => []);
-     if (Array.isArray(r) && r.length > 0) {
-       const c = r[0];
-       const isFolio = c.department === 'room_folio';
-       const effDept = isFolio ? 'Room' : ((c.department || 'Restaurant').charAt(0).toUpperCase() + (c.department || 'restaurant').slice(1));
-       let meta: any = {};
-       if (isFolio || (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('{'))) {
-         try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
-       }
-       let itemsArr: any[] = [];
-       if (isFolio) {
-         const rc = Number(meta.roomCharge || 0);
-         if (rc > 0) itemsArr.push({ name: `Room Tariff (${meta.roomType || 'Stay'})`, qty: 1, price: rc });
-         const ft = Number(meta.foodTotal || meta.restaurant || 0);
-         if (ft > 0) itemsArr.push({ name: 'Restaurant / Food Charges', qty: 1, price: ft });
-         const bt = Number(meta.barTotal || meta.bar || 0);
-         if (bt > 0) itemsArr.push({ name: 'Bar Lounge Charges', qty: 1, price: bt });
-         const ex = Number(meta.extra || 0);
-         if (ex > 0) itemsArr.push({ name: 'Extra Bed / Service', qty: 1, price: ex });
-         if (itemsArr.length === 0) {
-           itemsArr.push({ name: `Room Tariff (${meta.roomType || 'Stay'})`, qty: 1, price: Number(c.grand_total || meta.grandTotal || meta.total || 0) });
-         }
-       } else if (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('[')) {
-         try {
-           const raw = JSON.parse(c.items_summary);
-           if (Array.isArray(raw)) {
-             itemsArr = raw.map((it: any) => {
-               let itName = it.name || it.item_name || 'Item';
-               if (typeof itName === 'string' && itName.trim().startsWith('{')) {
-                 try { const inner = JSON.parse(itName); itName = inner.name || inner.item_name || 'Item'; } catch {}
-               }
-               return { name: itName, qty: Number(it.qty || it.quantity || 1), price: Number(it.price || 0) };
-             });
-           }
-         } catch {}
-       }
-       if (itemsArr.length === 0) {
-         itemsArr = [{ name: c.items_summary || (effDept + ' Order'), qty: 1, price: Number(c.grand_total || 0) }];
-       }
-
-       const total = Number(c.grand_total || meta.grandTotal || meta.total || 0);
-       const subtotal = Number(isFolio ? (meta.roomCharge || c.subtotal || total) : (c.subtotal || total));
-       const ord = {
-         id: c.order_id || c.id,
-         order_number: isFolio ? (meta.voucherNumber || c.bill_no || `R-${c.id}`) : (c.bill_no || `#${cleanId}`),
-         dept: effDept,
-         room_number: c.room_number,
-         customer_name: isFolio ? (meta.guestName || `Room ${c.room_number}`) : `Room ${c.room_number}`,
-         total,
-         subtotal,
-         tax: Number(c.gst || meta.tax || 0),
-         discount: Number(isFolio ? (meta.discount || 0) : 0),
-         payment_mode: isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : (c.payment_mode || 'room_folio'),
-         is_paid: isFolio ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0) : (c.status === 'pending' || c.status === 'unpaid' ? 0 : 1),
-         items_json: JSON.stringify(itemsArr),
-         created_at: c.created_at
-       };
-       billCache.set(dept + ':' + cleanId, ord);
-       billCache.set(effDept + ':' + cleanId, ord);
-       return { order: ord, logs: [] };
-     }
-   } catch {}
+    // 3. Fallback: Query Firebase Cloud room_charges_inbox
+    try {
+      const fbOrd = await fb.fetchSingleOrderOrCharge(cleanId);
+      if (fbOrd) {
+        billCache.set(dept + ':' + cleanId, fbOrd.order);
+        billCache.set(fbOrd.order.dept + ':' + cleanId, fbOrd.order);
+        return fbOrd;
+      }
+    } catch {}
 
    return { order: { id: cleanId, order_number: `#${cleanId}`, dept, total: 0, items_json: '[]' }, logs: [] };
  },
@@ -1544,10 +570,10 @@ editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.
       }
     } catch {}
 
-    // Fallback to Supabase Cloud (works everywhere: 5G, 4G, remote)
+    // Fallback to Cloud (works everywhere: 5G, 4G, remote)
     try {
-      const cloud = await fetchSupabaseApprovals();
-      if (cloud.pending.length > 0 || cloud.history.length > 0) {
+      const cloud: any = await fetchSupabaseApprovals();
+      if (cloud?.pending?.length > 0 || cloud?.history?.length > 0) {
         return cloud;
       }
     } catch {}
@@ -1579,69 +605,28 @@ editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.
     // 1. Try local CRM server if reachable
     http.post('/owner/push-token', { token: cleanToken, platform: Platform.OS }).catch(() => null);
 
-    // 2. Direct Cloud Registration to Supabase 'owner_devices' (Works everywhere: 4G, 5G, or any Wi-Fi)
+    // 2. Direct Cloud Registration to Firebase 'owner_devices' (Works everywhere: 4G, 5G, or any Wi-Fi)
     try {
-      const h = {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: 'Bearer ' + SUPABASE_ANON_KEY,
-        'Content-Type': 'application/json'
-      };
-      const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/owner_devices?fcm_token=eq.${encodeURIComponent(cleanToken)}&select=id`, { headers: h });
-      const existing = await checkRes.json();
-      if (Array.isArray(existing) && existing.length > 0) {
-        await fetch(`${SUPABASE_URL}/rest/v1/owner_devices?id=eq.${existing[0].id}`, {
-          method: 'PATCH',
-          headers: h,
-          body: JSON.stringify({
-            updated_at: new Date().toISOString(),
-            device_name: Platform.OS === 'android' ? 'Owner Android Phone' : 'Owner Device'
-          })
-        });
-      } else {
-        await fetch(`${SUPABASE_URL}/rest/v1/owner_devices`, {
-          method: 'POST',
-          headers: h,
-          body: JSON.stringify({
-            fcm_token: cleanToken,
-            device_name: Platform.OS === 'android' ? 'Owner Android Phone' : 'Owner Device',
-            updated_at: new Date().toISOString()
-          })
-        });
-      }
+      await fb.registerDeviceToken(cleanToken);
       return { success: true, cloud: true };
     } catch (cloudErr: any) {
-      console.warn('[PushToken] Supabase cloud registration failed:', cloudErr?.message);
+      console.warn('[PushToken] Firebase cloud registration failed:', cloudErr?.message);
       return null;
     }
   },
   sendTestPush: async () => {
-    try {
-      const token = await AsyncStorage.getItem('owner_device_push_token');
-      const h = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
-      };
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
-        method: 'POST',
-        headers: h,
-        body: JSON.stringify({
-          title: '🛎️ Hotel City Park Push Test',
-          body: 'Push notifications are connected and working perfectly on this phone!',
-          type: 'test',
-          tokens: token ? [token] : []
-        })
-      });
-      return await res.json();
-    } catch (e: any) {
-      return { success: false, error: e.message };
-    }
+    return fb.sendTestPush();
   },
  storeBills: async (status: 'live' | 'history' | 'all' = 'all') => {
   try {
+   const fbData = await fb.fetchStoreBills(status);
+   if (fbData?.success && Array.isArray(fbData.bills) && fbData.bills.length > 0) return fbData;
+  } catch (_) {}
+  try {
    const res = await http.get('/store/bills', { params: { status } });
-   if (res.data?.success && res.data?.bills) return res.data;
+   if (res.data?.success && Array.isArray(res.data.bills) && res.data.bills.length > 0) return res.data;
   } catch (err: any) {
-   console.warn('[Store] Local CRM unreachable, falling back to direct cloud Supabase:', err.message);
+   console.warn('[Store] Local CRM unreachable, falling back to direct cloud Firebase:', err.message);
   }
   return fetchSupabaseStoreBills(status);
  },
@@ -1649,13 +634,13 @@ editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.
   try {
    const res = await http.post('/store/payments', body);
    if (res.data?.success) {
-     recordSupabaseStorePayment(body).catch(() => {});
+     recordSupabaseStorePayment(body, false).catch(() => {});
      return res.data;
    }
   } catch (err: any) {
    console.warn('[Store Payment] Local CRM unreachable, recording directly in Supabase cloud:', err.message);
   }
-  return recordSupabaseStorePayment(body);
+  return recordSupabaseStorePayment(body, true);
  },
   booking: async (id: any) => {
     try {
@@ -1712,11 +697,7 @@ editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.
       if (res.data?.success) return res.data;
     } catch (_) {}
     try {
-      const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.fb_live_state&limit=1`, { headers: h }).then(x => x.json()).catch(() => []);
-      if (Array.isArray(r) && r[0]?.items_summary) {
-        return JSON.parse(r[0].items_summary);
-      }
+      return await fb.fetchLiveState();
     } catch (_) {}
     return {
       restaurantTables: [],
@@ -1779,15 +760,99 @@ editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.
     return [];
   },
   storeVendors: async () => {
-  try {
-   const res = await http.get('/store/vendors');
-   if (res.data?.vendors) return res.data.vendors;
-  } catch {
-   const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-   const r = await fetch(`${SUPABASE_URL}/rest/v1/store_vendors?select=*`, { headers: h }).then(x => x.json()).catch(() => []);
-   return Array.isArray(r) ? r : [];
-  }
- },
+    try {
+      const fbVendors = await fb.fetchStoreVendors();
+      if (Array.isArray(fbVendors) && fbVendors.length > 0) {
+        return fbVendors;
+      }
+    } catch (_) {}
+    try {
+      const res = await http.get('/store/vendors');
+      if (res.data?.vendors && res.data.vendors.length > 0) return res.data.vendors;
+    } catch (_) {}
+    try {
+      const fbVendors = await fb.fetchStoreVendors();
+      if (Array.isArray(fbVendors)) return fbVendors;
+    } catch (_) {}
+    return [];
+  },
+  createStoreVendor: async (data: { name: string; mobile?: string; address?: string }) => {
+    try {
+      await http.post('/store/vendors', data);
+    } catch (_) {}
+    return fb.createStoreVendor(data);
+  },
+  updateStoreVendor: async (id: number | string, data: { name: string; mobile?: string; address?: string }) => {
+    try {
+      await http.put(`/store/vendors/${id}`, data);
+    } catch (_) {}
+    return fb.updateStoreVendor(id, data);
+  },
+  deleteStoreVendor: async (id: number | string) => {
+    try {
+      await http.delete(`/store/vendors/${id}`);
+    } catch (_) {}
+    return fb.deleteStoreVendor(id);
+  },
+  staff: async (department?: string) => {
+    try {
+      const res = await sget('/staff' + (department ? `?department=${department}` : ''));
+      if (res?.data?.staff && Array.isArray(res.data.staff) && res.data.staff.length > 0) return res.data.staff;
+    } catch (_) {}
+    try {
+      const res = await sget('/owner/staff' + (department ? `?department=${department}` : ''));
+      if (res?.data?.staff && Array.isArray(res.data.staff) && res.data.staff.length > 0) return res.data.staff;
+    } catch (_) {}
+    const list = await fb.fetchFirestoreCollection('staff_users');
+    if (department) return list.filter((s: any) => s.role === department);
+    return list;
+  },
+  updateStaffPassword: async (staffId: any, newPassword: string, staffUsername?: string) => {
+    const cleanPass = String(newPassword || '').trim();
+    let updatedLocal = false;
+    try {
+      const res = await owner(() => http.post(`/staff/${staffId}/password`, { plain_password: cleanPass, password: cleanPass }).then(r => r.data));
+      if (res?.success) updatedLocal = true;
+    } catch (_) {
+      try {
+        const res2 = await owner(() => http.put(`/staff/${staffId}`, { plain_password: cleanPass, password: cleanPass }).then(r => r.data));
+        if (res2?.success) updatedLocal = true;
+      } catch (_) {}
+    }
+    try {
+      await fetch(`${fb.FIREBASE_REST_URL}/staff_users/${encodeURIComponent(staffId)}?updateMask.fieldPaths=plain_password&updateMask.fieldPaths=updated_at&key=${fb.FIREBASE_API_KEY}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields: {
+            plain_password: { stringValue: cleanPass },
+            updated_at: { stringValue: new Date().toISOString() }
+          }
+        })
+      });
+    } catch (fbErr: any) {
+      if (!updatedLocal) throw fbErr;
+    }
+    return { success: true, message: 'Password updated successfully' };
+  },
+  deleteExtraExpense: async (bookingIdOrId: any, expenseId?: any) => {
+    const id = expenseId !== undefined ? expenseId : bookingIdOrId;
+    try {
+      const res = await http.delete(`/owner/extra-expenses/${id}`);
+      if (res.data?.success) return res.data;
+    } catch (_) {
+      try {
+        const res2 = await http.delete(`/extra-expenses/${id}`);
+        if (res2.data?.success) return res2.data;
+      } catch (__) {}
+    }
+    try {
+      await fetch(`${fb.FIREBASE_REST_URL}/room_charges_inbox/EXP-${id}?key=${fb.FIREBASE_API_KEY}`, {
+        method: 'DELETE'
+      });
+    } catch (_) {}
+    return { success: true };
+  },
 };
 // Web/demo build uses built-in sample data; native app uses the real CRM.
 export const api:typeof realApi=DEMO_MODE?(makeDemoApi(billCache) as any):realApi;

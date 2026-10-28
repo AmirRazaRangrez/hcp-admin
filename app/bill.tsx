@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, Pressable, Platform } from 'react-native';
+import { View, Text, Pressable, Platform, Alert } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -172,6 +172,55 @@ export default function Bill() {
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 6 }}>
               <Btn label="View PDF" onPress={() => Print.printAsync({ html: html(o, dept!) })} />
               <Btn label="Share / Download" onPress={() => setSheet(true)} />
+            </View>
+
+            <View style={{ marginTop: 12 }}>
+              <Pressable
+                onPress={() => {
+                  const billLabel = o.order_number || `#${o.id}`;
+                  const confirmMsg = `Are you sure you want to permanently delete ${billLabel}? This will remove it from the system and cannot be undone.`;
+                  const doDelete = async () => {
+                    try {
+                      await api.deleteBill(dept!, o.id || o.order_number);
+                      if (Platform.OS === 'web') {
+                        window.alert('Bill deleted successfully.');
+                      } else {
+                        Alert.alert('Deleted', 'Bill deleted successfully.');
+                      }
+                      router.back();
+                    } catch (err: any) {
+                      if (Platform.OS === 'web') {
+                        window.alert(err.message || 'Could not delete bill.');
+                      } else {
+                        Alert.alert('Error', err.message || 'Could not delete bill.');
+                      }
+                    }
+                  };
+
+                  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+                    if (window.confirm(confirmMsg)) doDelete();
+                  } else {
+                    Alert.alert('Delete Bill', confirmMsg, [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Yes, Delete', style: 'destructive', onPress: doDelete }
+                    ]);
+                  }
+                }}
+                style={({ pressed }) => ({
+                  backgroundColor: pressed ? '#FEE2E2' : '#FFFFFF',
+                  borderColor: '#F87171',
+                  borderWidth: 1.5,
+                  paddingVertical: 12,
+                  paddingHorizontal: 16,
+                  borderRadius: 12,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexDirection: 'row',
+                  gap: 8
+                })}
+              >
+                <Text style={{ color: '#DC2626', fontSize: 14, fontWeight: '800' }}>🗑️ Delete This Bill</Text>
+              </Pressable>
             </View>
           </>
         )}

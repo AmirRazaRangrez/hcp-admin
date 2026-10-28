@@ -127,10 +127,10 @@ export function useLoad<T>(fn: () => Promise<T>, deps: any[] = [], key?: string,
     }
   }, deps);
 
-  // 3. Mount effect: if cache is fresh (< 60s), do NOT re-fetch. If empty or stale, fetch silently.
+  // 3. Mount effect: if cache is fresh (< 60s and not partial), do NOT re-fetch. If empty, stale, or partial, fetch silently.
   useEffect(() => {
     const cached = key ? memCache.get(key) : undefined;
-    const isFresh = cached && cached.t && (Date.now() - new Date(cached.t).getTime() < 60000);
+    const isFresh = cached && cached.t && !cached.d?.isPartial && (Date.now() - new Date(cached.t).getTime() < 60000);
     if (!isFresh) {
       run(Boolean(cached));
     }

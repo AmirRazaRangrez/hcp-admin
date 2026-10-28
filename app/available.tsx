@@ -153,7 +153,7 @@ const styles = StyleSheet.create({
   summaryBadgeText: {
     color: '#34D399',
     fontSize: 11,
-    fontWeight: '850',
+    fontWeight: '800',
     letterSpacing: 0.5
   },
   summaryDivider: {

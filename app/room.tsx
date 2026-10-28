@@ -276,7 +276,15 @@ export default function RoomDetails() {
     // When viewing a checked-out / available room, NEVER call api.roomFolio(id) because
     // roomFolio is strictly for active rooms and numeric IDs can clash with SQLite internal room IDs!
     if (isCheckoutParam || String(id).startsWith('CO-') || String(id).startsWith('out:')) {
-      // 0a. Check in-memory cache first (populated by available.tsx)
+      let paramPayments: any[] = [];
+      try {
+        if ((params as any).payments) {
+          const parsed = JSON.parse((params as any).payments);
+          if (Array.isArray(parsed)) paramPayments = parsed;
+        }
+      } catch (_) {}
+
+      // 0a. Check in-memory cache first (populated by available.tsx / activity.tsx)
       if (targetRoomNum && memCache?.get) {
         const cached = memCache.get('room:' + targetRoomNum)?.d;
         if (cached && (cached.guest || cached.guestName)) {
@@ -284,61 +292,160 @@ export default function RoomDetails() {
             isCheckout: true,
             ...cached,
             room: targetRoomNum,
-            roomNumber: targetRoomNum
+            roomNumber: targetRoomNum,
+            payments: (Array.isArray(cached.payments) && cached.payments.length > 0) ? cached.payments : paramPayments
           };
         }
       }
 
-      // 0b. Query Supabase room_charges_inbox for checkout record of THIS room
+      // 0b. Try fetching from live CRM / cloud tunnel API if bookingId is known
+      const targetBookingId = (params as any).bookingId || (!isNaN(Number(id)) && Number(id) < 5000 ? id : null);
+      if (targetBookingId) {
+        try {
+          const b = await api.booking(targetBookingId);
+          if (b && (b.guest_name || b.guest) && (b.actual_checkout_time || b.payments)) {
+            const rTotal = Number(b.total_room_charge || b.grand_total || b.total || 0);
+            const rPaid = Number(b.total_paid || b.paid || b.advance_payment || rTotal);
+            const bPayments = Array.isArray(b.payments) && b.payments.length > 0 ? b.payments : paramPayments;
+            return {
+              isCheckout: true,
+              id: String(b.id || targetBookingId),
+              bookingId: b.id,
+              room: cleanRoomNumber(b.room_number || targetRoomNum || id),
+              roomNumber: cleanRoomNumber(b.room_number || targetRoomNum || id),
+              guest: b.guest_name || b.guest || 'Valued Guest',
+              guestName: b.guest_name || b.guest || 'Valued Guest',
+              mobile: b.mobile || '',
+              adults: Number((b.adults_male || 0) + (b.adults_female || 0) + (b.adults_other || 0)) || 1,
+              children: Number(b.children || 0),
+              mealPlan: b.meal_plan || 'without_breakfast',
+              roomCount: Number(b.room_count || 1),
+              checkIn: b.checkin_time || b.created_at,
+              checkOut: b.actual_checkout_time || b.checkout_time || new Date().toISOString(),
+              checkoutTime: b.actual_checkout_time || b.checkout_time || new Date().toISOString(),
+              checkedInBy: b.checked_in_by || 'Front Desk',
+              checkedOutBy: b.checked_out_by || 'Staff',
+              total: rTotal,
+              paid: rPaid,
+              pending: 0,
+              payments: bPayments,
+              source: b.booking_source || 'Front Desk',
+              roomCharge: Number(b.total_room_charge || rTotal)
+            };
+          }
+        } catch (_) {}
+      }
+
+      // 0c. Query Firebase Firestore / Supabase for checkout record of THIS room
       try {
         const targetRoom = targetRoomNum || String(params.room || id).replace(/^out:/, '').replace(/^in:/, '').trim();
-        const SUPABASE_URL = 'https://hlwmsllmqfdxfmqulrat.supabase.co';
-        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhsd21zbGxtcWZkeGZtcXVscmF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzc4MzgsImV4cCI6MjEwNTMxMzgzOH0.r7Nb8rEJTrZvprpf4G023nMY0suq2OqVGetG0I8esjk';
-        const h = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/room_charges_inbox?department=eq.room_checkout&room_number=eq.${encodeURIComponent(targetRoom)}&order=created_at.desc&limit=1`, { headers: h }).then(r => r.json());
-        if (Array.isArray(res) && res.length > 0) {
-          const row = res[0];
-          let meta: any = {};
-          try { meta = JSON.parse(row.items_summary || '{}'); } catch {}
-          return {
-            isCheckout: true,
-            id: String(row.id),
-            room: targetRoom,
-            roomNumber: targetRoom,
-            guest: meta.guestName || meta.guest_name || params.guest || 'Valued Guest',
-            guestName: meta.guestName || meta.guest_name || params.guest || 'Valued Guest',
-            mobile: meta.mobile || params.phone || '',
-            adults: Number(meta.adults || 1),
-            children: Number(meta.children || 0),
-            mealPlan: meta.mealPlan || 'without_breakfast',
-            roomCount: Number(meta.roomCount || 1),
-            checkIn: meta.checkinTime || meta.checkin_time || row.created_at,
-            checkOut: meta.checkoutTime || meta.checkout_time || row.created_at,
-            checkoutTime: meta.checkoutTime || meta.checkout_time || row.created_at,
-            checkedInBy: meta.checkedInBy || 'Front Desk',
-            checkedOutBy: meta.checkedOutBy || row.settled_by || 'Staff',
-            total: Number(row.grand_total || meta.netSettle || meta.total || 0),
-            paid: Number(row.grand_total || meta.netSettle || meta.total || 0),
-            pending: 0,
-            payments: meta.payments || [],
-            source: meta.source || 'Front Desk',
-            roomCharge: Number(row.subtotal || row.grand_total || 0),
-            restaurant: 0,
-            bar: 0,
-            extra: 0,
-            discount: 0
-          };
-        }
+        const cleanRoom = cleanRoomNumber(targetRoom);
+
+        // 1. Check Firebase Firestore direct doc first
+        try {
+          const FIREBASE_REST_URL = 'https://firestore.googleapis.com/v1/projects/hotelcitypark-crm/databases/(default)/documents';
+          const FIREBASE_API_KEY = 'AIzaSyCtZnkdk1_q8rWrISnD8P2Rhi-jcPn1QTI';
+          const fbRes = await fetch(`${FIREBASE_REST_URL}/room_charges_inbox/co_${encodeURIComponent(cleanRoom)}?key=${FIREBASE_API_KEY}`).then(r => r.json()).catch(() => null);
+          if (fbRes?.fields) {
+            const f = fbRes.fields;
+            let meta: any = {};
+            try { meta = JSON.parse(f.items_summary?.stringValue || '{}'); } catch {}
+            const grandTotal = Number(f.grand_total?.doubleValue || f.grand_total?.integerValue || meta.netSettle || meta.total || 0);
+            const fbPayments = Array.isArray(meta.payments) && meta.payments.length > 0 ? meta.payments : paramPayments;
+            return {
+              isCheckout: true,
+              id: String(f.id?.stringValue || `co_${cleanRoom}`),
+              room: targetRoom,
+              roomNumber: targetRoom,
+              guest: meta.guestName || meta.guest_name || f.guest_name?.stringValue || params.guest || 'Valued Guest',
+              guestName: meta.guestName || meta.guest_name || f.guest_name?.stringValue || params.guest || 'Valued Guest',
+              mobile: meta.mobile || f.guest_mobile?.stringValue || params.phone || '',
+              adults: Number(meta.adults || 1),
+              children: Number(meta.children || 0),
+              mealPlan: meta.mealPlan || 'without_breakfast',
+              roomCount: Number(meta.roomCount || 1),
+              checkIn: meta.checkinTime || meta.checkin_time || f.created_at?.stringValue,
+              checkOut: meta.checkoutTime || meta.checkout_time || f.created_at?.stringValue,
+              checkoutTime: meta.checkoutTime || meta.checkout_time || f.created_at?.stringValue,
+              checkedInBy: meta.checkedInBy || 'Front Desk',
+              checkedOutBy: meta.checkedOutBy || f.settled_by?.stringValue || 'Staff',
+              total: grandTotal,
+              paid: grandTotal,
+              pending: 0,
+              payments: fbPayments,
+              source: meta.source || 'Front Desk',
+              roomCharge: Number(f.subtotal?.doubleValue || f.subtotal?.integerValue || grandTotal),
+              restaurant: 0,
+              bar: 0,
+              extra: 0,
+              discount: 0
+            };
+          }
+        } catch (_) {}
+
+        // 2. Query Firebase Firestore room_charges_inbox collection for matching checkout
+        try {
+          const FIREBASE_REST_URL = 'https://firestore.googleapis.com/v1/projects/hotelcitypark-crm/databases/(default)/documents';
+          const FIREBASE_API_KEY = 'AIzaSyCtZnkdk1_q8rWrISnD8P2Rhi-jcPn1QTI';
+          const listRes = await fetch(`${FIREBASE_REST_URL}/room_charges_inbox?key=${FIREBASE_API_KEY}&pageSize=50`).then(r => r.json()).catch(() => null);
+          if (listRes?.documents && Array.isArray(listRes.documents)) {
+            const matchDoc = listRes.documents.find((d: any) => {
+              const dept = d.fields?.department?.stringValue;
+              const rNum = d.fields?.room_number?.stringValue || '';
+              const docName = String(d.name?.split('/').pop() || '');
+              if (dept !== 'room_checkout') return false;
+              if (docName === `co_${cleanRoom}` || docName === `checkout_${cleanRoom}`) return true;
+              if (rNum === cleanRoom || rNum === targetRoom) return true;
+              if (rNum.split(',').map((x: any) => cleanRoomNumber(x)).includes(cleanRoom)) return true;
+              return false;
+            });
+            if (matchDoc?.fields) {
+              const f = matchDoc.fields;
+              let meta: any = {};
+              try { meta = JSON.parse(f.items_summary?.stringValue || '{}'); } catch {}
+              const grandTotal = Number(f.grand_total?.doubleValue || f.grand_total?.integerValue || meta.netSettle || meta.total || 0);
+              const listPayments = Array.isArray(meta.payments) && meta.payments.length > 0 ? meta.payments : paramPayments;
+              return {
+                isCheckout: true,
+                id: String(matchDoc.name?.split('/').pop() || f.id?.stringValue || `co_${cleanRoom}`),
+                room: targetRoom,
+                roomNumber: targetRoom,
+                guest: meta.guestName || meta.guest_name || f.guest_name?.stringValue || params.guest || 'Valued Guest',
+                guestName: meta.guestName || meta.guest_name || f.guest_name?.stringValue || params.guest || 'Valued Guest',
+                mobile: meta.mobile || f.guest_mobile?.stringValue || params.phone || '',
+                adults: Number(meta.adults || 1),
+                children: Number(meta.children || 0),
+                mealPlan: meta.mealPlan || 'without_breakfast',
+                roomCount: Number(meta.roomCount || 1),
+                checkIn: meta.checkinTime || meta.checkin_time || f.created_at?.stringValue,
+                checkOut: meta.checkoutTime || meta.checkout_time || f.created_at?.stringValue,
+                checkoutTime: meta.checkoutTime || meta.checkout_time || f.created_at?.stringValue,
+                checkedInBy: meta.checkedInBy || 'Front Desk',
+                checkedOutBy: meta.checkedOutBy || f.settled_by?.stringValue || 'Staff',
+                total: grandTotal,
+                paid: grandTotal,
+                pending: 0,
+                payments: listPayments,
+                source: meta.source || 'Front Desk',
+                roomCharge: Number(f.subtotal?.doubleValue || f.subtotal?.integerValue || grandTotal),
+                restaurant: 0,
+                bar: 0,
+                extra: 0,
+                discount: 0
+              };
+            }
+          }
+        } catch (_) {}
       } catch (cloudErr) {
-        console.warn('Cloud checkout fetch notice:', cloudErr);
+        console.warn('Firebase checkout fetch notice:', cloudErr);
       }
 
-      // 0c. Fallback for checked-out room from params
+      // 0d. Fallback for checked-out room from params
       const pTotal = Number(params.total || params.paid || 0);
       const pPaid = Number(params.paid || pTotal);
       return {
         isCheckout: true,
-        id: String(params.bookingId || id),
+        id: String((params as any).bookingId || id),
         room: targetRoomNum || String(params.room || id),
         roomNumber: targetRoomNum || String(params.room || id),
         guest: params.guest || 'Valued Guest',
@@ -347,7 +454,7 @@ export default function RoomDetails() {
         total: pTotal,
         paid: pPaid,
         pending: 0,
-        payments: [],
+        payments: paramPayments,
         source: 'Front Desk',
         checkIn: new Date().toISOString(),
         checkOut: new Date().toISOString(),
@@ -411,6 +518,7 @@ export default function RoomDetails() {
             total: Number(folio.summary?.grandTotal ?? folio.total ?? 0),
             paid: Number(folio.summary?.advancePaid ?? folio.paid ?? 0),
             pending: 0,
+            transferHistory: folio.transferHistory || fr.transferHistory || fr.transfer_history || [],
             raw: fr
           };
         } else {
@@ -421,23 +529,28 @@ export default function RoomDetails() {
             ...(folio.barOrders || []).map((o: any) => ({ ...o, dept: 'Bar' }))
           ];
 
-          const sc = fs.stayCalcNow || fs.stayCalcDeclared || null;
-          const roomCharge = Number(fs.roomCharge ?? fr.total_room_charge ?? sc?.roomCharge ?? (found?.roomCharge || 0));
+          const sc = fs.stayCalcDeclared || fs.stayCalcNow || null;
+          const roomCharge = Number(sc?.roomCharge ?? fs.roomCharge ?? fr.total_room_charge ?? (found?.roomCharge || 0));
           const foodTotal = Number(fs.foodTotal ?? sc?.fnbTotal ?? (found?.restaurant || 0));
           const barTotal = Number(fs.barTotal ?? (found?.bar || 0));
-          const extra = Number(fs.hotelExtrasCharge ?? (found?.extra || 0));
-          const discount = Number(fs.discountAmount ?? sc?.discountAmount ?? (found?.discount || 0));
-          const total = Number(fs.grandTotal ?? sc?.grandTotal ?? (roomCharge + foodTotal + barTotal + extra));
+          const extra = Number(fs.hotelExtrasCharge ?? fs.extra ?? (found?.extra || 0));
+          const discount = Number(sc?.discountAmount ?? fs.discountAmount ?? fs.discount ?? (found?.discount || 0));
+          const tariffSubtotal = Number(sc?.baseRoomTotal ?? sc?.baseRoomTariff ?? (roomCharge + discount));
+          const total = Number(sc?.grandTotal ?? fs.grandTotal ?? (roomCharge + foodTotal + barTotal + extra - discount));
           const paid = Number(fs.advancePaid ?? sc?.paid ?? fr.total_paid ?? (found?.paid || 0));
           const refundDue = Number(sc?.refundDue ?? (paid > total ? paid - total : 0));
-          const pending = Number(fs.balanceDue ?? sc?.balanceDue ?? (total > paid ? total - paid : 0));
+          const pending = Number(sc?.balanceDue ?? fs.balanceDue ?? (total > paid ? total - paid : 0));
 
           return {
             isCheckout: isCheckoutParam,
             ...(found || {}),
             id: String(fr.id || fr.booking_id || id),
             room: cleanRoomNumber(fr.room_number || id),
+            roomNumber: cleanRoomNumber(fr.room_number || id),
+            roomType: fr.room_type || folio.roomType || found?.roomType || 'Executive Room',
+            room_type: fr.room_type || folio.roomType || found?.roomType || 'Executive Room',
             guest: fr.guest_name || found?.guest || 'In-House Guest',
+            guestName: fr.guest_name || found?.guest || 'In-House Guest',
             mobile: fr.mobile || found?.mobile || '',
             email: fr.email || found?.email || '',
             aadharNumber: fr.aadhar_number || found?.aadharNumber || '',
@@ -484,6 +597,7 @@ export default function RoomDetails() {
             extra,
             discount,
             total,
+            tariffSubtotal,
             paid,
             pending,
             refundDue,
@@ -496,7 +610,9 @@ export default function RoomDetails() {
             folioRestaurantOrders: folio.restaurantOrders || [],
             folioBarOrders: folio.barOrders || [],
             folioOrders: mergedOrders,
+            folioExtraExpenses: folio.extraExpenses || folio.expenses || fr.extraExpenses || fr.expenses || [],
             payments: folio.payments || [],
+            transferHistory: folio.transferHistory || fr.transferHistory || fr.transfer_history || (fr.extension_logs_json ? (() => { try { return JSON.parse(fr.extension_logs_json).filter((l: any) => l.type === 'room_transfer'); } catch (_) { return []; } })() : (found?.transferHistory || [])),
             raw: fr
           };
         }
@@ -506,7 +622,14 @@ export default function RoomDetails() {
     }
 
     // Return cached room immediately if folio was not reachable
-    if (found) return found;
+    if (found) {
+      if (!found.transferHistory && found.raw?.extension_logs_json) {
+        try {
+          found.transferHistory = JSON.parse(found.raw.extension_logs_json).filter((l: any) => l.type === 'room_transfer');
+        } catch (_) {}
+      }
+      return found;
+    }
 
     // 2. Fallback: fetch from api.occupied()
     try {
@@ -535,12 +658,12 @@ export default function RoomDetails() {
         email: '',
         address: '',
         dob: '',
-        checkIn: params.checkIn || found?.checkIn || new Date().toISOString(),
+        checkIn: (params as any).checkIn || found?.checkIn || new Date().toISOString(),
         checkOut: (() => {
-          let exp = params.checkOut || params.approxCheckOut || found?.approxCheckOut || found?.checkOut || '';
+          let exp = (params as any).checkOut || (params as any).approxCheckOut || found?.approxCheckOut || found?.checkOut || '';
           if (!exp) {
             try {
-              const cin = params.checkIn || found?.checkIn || new Date().toISOString();
+              const cin = (params as any).checkIn || found?.checkIn || new Date().toISOString();
               const dIn = new Date(String(cin).includes('T') ? cin : String(cin).replace(' ', 'T') + '+05:30').getTime();
               if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
             } catch (_) {}
@@ -548,17 +671,17 @@ export default function RoomDetails() {
           return exp;
         })(),
         approxCheckOut: (() => {
-          let exp = params.approxCheckOut || params.checkOut || found?.approxCheckOut || found?.checkOut || '';
+          let exp = (params as any).approxCheckOut || (params as any).checkOut || found?.approxCheckOut || found?.checkOut || '';
           if (!exp) {
             try {
-              const cin = params.checkIn || found?.checkIn || new Date().toISOString();
+              const cin = (params as any).checkIn || found?.checkIn || new Date().toISOString();
               const dIn = new Date(String(cin).includes('T') ? cin : String(cin).replace(' ', 'T') + '+05:30').getTime();
               if (!isNaN(dIn)) exp = new Date(dIn + 24 * 3600 * 1000).toISOString();
             } catch (_) {}
           }
           return exp;
         })(),
-        checkoutTime: params.checkOut || params.approxCheckOut || '',
+        checkoutTime: (params as any).checkOut || (params as any).approxCheckOut || '',
         roomCharge: pTotal,
         restaurant: 0,
         bar: 0,
@@ -1156,6 +1279,56 @@ export default function RoomDetails() {
             </View>
           </Card>
 
+          {/* Room Transfer Audit Banner */}
+          {Array.isArray(s.transferHistory) && s.transferHistory.length > 0 ? (
+            <Card style={styles.transferCard}>
+              <View style={styles.transferHeaderRow}>
+                <View style={styles.transferBadge}>
+                  <Text style={styles.transferBadgeText}>🔄 ROOM TRANSFERRED</Text>
+                </View>
+                <Text style={styles.transferCountText}>
+                  {s.transferHistory.length > 1 ? `${s.transferHistory.length} Shifts` : 'Shift Log'}
+                </Text>
+              </View>
+
+              {s.transferHistory.map((th: any, idx: number) => {
+                const fromNum = cleanRoomNumber(th.from_room_number || th.from_room || th.from || '?');
+                const toNum = cleanRoomNumber(th.to_room_number || th.to_room || th.to || s.room || '?');
+                const staff = th.transferred_by || th.staff_name || th.staff || 'Staff';
+                const timeStr = th.transferred_at || th.timestamp || th.created_at;
+                const formattedTime = timeStr ? formatDT(timeStr) : 'Recently';
+                const reason = th.reason || (th.rates_preserved ? 'Rate-preserved shift' : 'Room shift');
+
+                return (
+                  <View key={idx} style={[styles.transferItem, idx > 0 && styles.transferItemBorder]}>
+                    <View style={styles.transferMainRow}>
+                      <Text style={styles.transferMainText}>
+                        Transferred from <Text style={styles.transferHighlight}>Room {fromNum}</Text> ➔ <Text style={styles.transferHighlight}>Room {toNum}</Text>
+                      </Text>
+                    </View>
+
+                    <View style={styles.transferMetaRow}>
+                      <Text style={styles.transferMetaText}>
+                        👤 By: <Text style={styles.transferMetaBold}>{staff}</Text>
+                      </Text>
+                      <Text style={styles.transferMetaText}>
+                        🕒 {formattedTime}
+                      </Text>
+                    </View>
+
+                    {reason ? (
+                      <View style={styles.transferReasonRow}>
+                        <Text style={styles.transferReasonText}>
+                          Reason: {reason}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </Card>
+          ) : null}
+
           {/* Official Folio Documents: 5 Download Buttons */}
           <View style={styles.actionSection}>
             <View style={styles.actionHeaderRow}>
@@ -1487,6 +1660,81 @@ export default function RoomDetails() {
             )}
           </Card>
 
+          {/* Section: Extra Expenses & Damages */}
+          {Array.isArray(s.folioExtraExpenses) && s.folioExtraExpenses.length > 0 && (
+            <View style={{ marginTop: 14 }}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>🛡️ Extra Expenses & Damages ({s.folioExtraExpenses.length})</Text>
+                {s.extra > 0 && (
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: '#DC2626' }}>
+                    Total: {money(s.extra)}
+                  </Text>
+                )}
+              </View>
+              {s.folioExtraExpenses.map((exp: any, idx: number) => (
+                <Card key={exp.id || idx} style={{ marginBottom: 10, borderColor: '#FECACA', borderWidth: 1, backgroundColor: '#FFF5F5', padding: 14 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <View style={{ flex: 1, paddingRight: 8 }}>
+                      <Text style={{ fontWeight: '800', fontSize: 15, color: '#1E293B' }}>{exp.reason || exp.title || 'Damage / Incidental'}</Text>
+                      <Text style={{ color: '#64748B', fontSize: 12, marginTop: 2 }}>
+                        {exp.category || 'Room Expense'} · Added by {exp.added_by || exp.created_by || 'Staff'}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => {
+                        const confirmMsg = `Are you sure you want to remove "${exp.reason || exp.title}" (${money(exp.total_amount || exp.amount)}) from Room #${s.room}?`;
+                        const doDelete = async () => {
+                          try {
+                            await api.deleteExtraExpense(s.booking_id || s.id, exp.id);
+                            if (Platform.OS === 'web') {
+                              window.alert('Extra expense removed successfully.');
+                            } else {
+                              Alert.alert('Deleted', 'Extra expense removed successfully.');
+                            }
+                            reload();
+                          } catch (err: any) {
+                            Alert.alert('Error', err.message || 'Could not delete expense.');
+                          }
+                        };
+                        if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+                          if (window.confirm(confirmMsg)) doDelete();
+                        } else {
+                          Alert.alert(
+                            'Delete Extra Expense',
+                            confirmMsg,
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              {
+                                text: 'Delete Charge',
+                                style: 'destructive',
+                                onPress: doDelete
+                              }
+                            ]
+                          );
+                        }
+                      }}
+                      style={({ pressed }) => ({
+                        backgroundColor: pressed ? '#FEE2E2' : '#FFFFFF',
+                        borderColor: '#F87171',
+                        borderWidth: 1,
+                        paddingVertical: 5,
+                        paddingHorizontal: 10,
+                        borderRadius: 8
+                      })}
+                    >
+                      <Text style={{ color: '#DC2626', fontSize: 12, fontWeight: '800' }}>🗑️ Delete</Text>
+                    </Pressable>
+                  </View>
+                  <View style={{ height: 1, backgroundColor: '#FED7D7', marginVertical: 8 }} />
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ color: '#64748B', fontSize: 12 }}>Taxable: {money(exp.amount)} (+{exp.gst_pct || 5}% GST)</Text>
+                    <Text style={{ fontSize: 16, fontWeight: '800', color: '#DC2626' }}>{money(exp.total_amount || exp.amount)}</Text>
+                  </View>
+                </Card>
+              ))}
+            </View>
+          )}
+
           {/* Section: F&B Itemized Bills */}
           <View style={styles.sectionHeaderRow}>
             <RestaurantIcon size={16} color={c.ink} />
@@ -1766,5 +2014,91 @@ const styles = StyleSheet.create({
     color: c.mute,
     fontSize: 13,
     paddingVertical: 12
+  },
+  transferCard: {
+    backgroundColor: '#FFFBEB',
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: '#FDE68A',
+    shadowColor: '#D97706',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+    marginVertical: 4
+  },
+  transferHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8
+  },
+  transferBadge: {
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#FCD34D'
+  },
+  transferBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#92400E',
+    letterSpacing: 0.5
+  },
+  transferCountText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#B45309'
+  },
+  transferItem: {
+    paddingVertical: 4
+  },
+  transferItemBorder: {
+    borderTopWidth: 1,
+    borderTopColor: '#FDE68A',
+    marginTop: 8,
+    paddingTop: 8
+  },
+  transferMainRow: {
+    marginBottom: 4
+  },
+  transferMainText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#78350F'
+  },
+  transferHighlight: {
+    fontWeight: '900',
+    color: '#92400E'
+  },
+  transferMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 2
+  },
+  transferMetaText: {
+    fontSize: 12,
+    color: '#92400E',
+    fontWeight: '500'
+  },
+  transferMetaBold: {
+    fontWeight: '700',
+    color: '#78350F'
+  },
+  transferReasonRow: {
+    marginTop: 4,
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6
+  },
+  transferReasonText: {
+    fontSize: 11.5,
+    fontStyle: 'italic',
+    color: '#92400E'
   }
 });

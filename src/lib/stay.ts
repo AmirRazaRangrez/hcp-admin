@@ -3,9 +3,12 @@ const n = (x: any) => Number(x) || 0;
 
 export type Stay = {
   id: string;
+  status?: string;
   room: string;
+  room_number?: string;
   guest: string;
   checkIn?: string;
+  checkin_time?: string;
   checkOut?: string;
   approxCheckOut?: string;
   roomCharge: number;
@@ -42,7 +45,7 @@ export type Stay = {
 export const isInHouse = (b: any) => {
   const st = String(b.status || b.booking_status || '').toLowerCase().trim();
   if (b.actual_checkout_time || ['checked_out', 'cancelled', 'canceled', 'no_show', 'settled', 'completed'].includes(st)) return false;
-  return st === 'active' || st === 'checked_in' || st === 'occupied' || (Boolean(b.checkin_time) && !['reserved', 'booked', 'confirmed', 'pending', 'checked_out', 'cancelled'].includes(st));
+  return st === 'active' || st === 'checked_in' || st === 'occupied' || (Boolean(b.checkin_time || b.checkIn) && !['reserved', 'booked', 'confirmed', 'pending', 'checked_out', 'cancelled'].includes(st));
 };
 
 // Damage / extra expense. The CRM field name is not verified, so several likely names are tried (first one with an amount wins).
@@ -85,9 +88,12 @@ export const toStay = (b: any): Stay => {
 
   return {
     id: String(b.id ?? b.booking_id),
-    room: String(b.room_number || (b.rooms || []).join(', ') || '-'),
+    status: b.status || (b.actual_checkout_time ? 'checked_out' : 'active'),
+    room: String(b.room_number || b.room || (b.rooms || []).join(', ') || '-'),
+    room_number: String(b.room_number || b.room || (b.rooms || []).join(', ') || '-'),
     guest: b.guest_name || b.name || 'Guest',
     checkIn: checkIn,
+    checkin_time: checkIn,
     checkOut: b.actual_checkout_time || b.checkout_time || approxCheckOut || '',
     approxCheckOut: approxCheckOut || b.actual_checkout_time || b.checkout_time || '',
     roomCharge,

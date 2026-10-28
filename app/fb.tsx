@@ -8,7 +8,8 @@ import {
   ScrollView,
   Modal,
   FlatList,
-  Platform
+  Platform,
+  Alert
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { api } from '../src/api/client';
@@ -673,8 +674,46 @@ export default function FBScreen() {
               </View>
             </ScrollView>
 
-            {/* Modal Bottom Action */}
+            {/* Modal Bottom Actions */}
             <View style={styles.modalFooter}>
+              <Pressable
+                onPress={() => {
+                  const billLabel = selectedBill?.order_number || selectedBill?.bill_no || `Bill #${selectedBill?.id}`;
+                  const confirmMsg = `Are you sure you want to permanently delete ${billLabel}? This will remove it from CRM and reverse any charged folio balances.`;
+                  const doDelete = async () => {
+                    try {
+                      await api.deleteBill(activeDept, selectedBill.id || selectedBill.order_number);
+                      if (Platform.OS === 'web') {
+                        window.alert('Bill deleted successfully.');
+                      } else {
+                        Alert.alert('Deleted', 'Bill deleted successfully.');
+                      }
+                      setSelectedBill(null);
+                      reloadOrders();
+                      reload();
+                    } catch (err: any) {
+                      if (Platform.OS === 'web') {
+                        window.alert(err.message || 'Could not delete bill.');
+                      } else {
+                        Alert.alert('Error', err.message || 'Could not delete bill.');
+                      }
+                    }
+                  };
+
+                  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+                    if (window.confirm(confirmMsg)) doDelete();
+                  } else {
+                    Alert.alert('Delete Bill', confirmMsg, [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Yes, Delete', style: 'destructive', onPress: doDelete }
+                    ]);
+                  }
+                }}
+                style={styles.modalDeleteBtn}
+              >
+                <Text style={styles.modalDeleteText}>🗑️ Delete Bill</Text>
+              </Pressable>
+
               <Pressable onPress={() => setSelectedBill(null)} style={styles.modalDismissBtn}>
                 <Text style={styles.modalDismissText}>Close Receipt</Text>
               </Pressable>
@@ -1303,14 +1342,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#E5E7EB'
+    borderTopColor: '#E5E7EB',
+    flexDirection: 'row',
+    gap: 10
+  },
+  modalDeleteBtn: {
+    backgroundColor: '#FEE2E2',
+    borderColor: '#F87171',
+    borderWidth: 1.5,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1
+  },
+  modalDeleteText: {
+    color: '#DC2626',
+    fontSize: 14,
+    fontWeight: '800'
   },
   modalDismissBtn: {
     backgroundColor: '#0F2A2E',
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
-    justifyContent: 'center'
+    justifyContent: 'center',
+    flex: 1
   },
   modalDismissText: {
     color: '#FFFFFF',

@@ -20,6 +20,13 @@ if(Platform.OS!=='web'){
    lightColor:'#0F2A2E',
    sound:'default',
   });
+  N.setNotificationChannelAsync('default',{
+   name:'Default Notifications',
+   importance:N.AndroidImportance.MAX,
+   vibrationPattern:[0,250,250,250],
+   lightColor:'#0F2A2E',
+   sound:'default',
+  });
  }
 }
 
@@ -80,13 +87,22 @@ function handleNotificationNavigation(router: any, response: any) {
       } else {
         router.push('/occupied');
       }
-    } else if (notifType.includes('checkout')) {
-      // 3. Check-Out: go to last payment / settled bill or Activity feed
-      if (data.bookingId) {
-        router.push({ pathname: '/bill', params: { dept: 'Room', id: String(data.bookingId) } });
-      } else {
-        router.push('/(tabs)/activity');
-      }
+    } else if (notifType.includes('checkout') || title.toLowerCase().includes('check-out') || title.toLowerCase().includes('checkout')) {
+      // 3. Check-Out: navigate to Activity feed filtered to Check-outs
+      const room = String(
+        data.room_number ||
+        data.room ||
+        (Array.isArray(data.roomNumbers) ? data.roomNumbers.join(', ') : '') ||
+        ''
+      ).trim();
+      router.push({
+        pathname: '/(tabs)/activity',
+        params: {
+          filter: 'checkout',
+          highlightRoom: room,
+          bookingId: String(data.bookingId || '')
+        }
+      });
     } else if (notifType.includes('store') || notifType.includes('vendor')) {
       router.push('/(tabs)/store');
     } else if (notifType.includes('analytic') || notifType.includes('revenue') || notifType.includes('report') || title.toLowerCase().includes('analytic') || body.toLowerCase().includes('revenue')) {
@@ -211,6 +227,15 @@ export default function Root(){
         if (Platform.OS === 'android') {
           await N.setNotificationChannelAsync('high_importance_channel', {
             name: 'High Importance Notifications',
+            importance: N.AndroidImportance.MAX,
+            vibrationPattern: [0, 250, 250, 250],
+            lightColor: '#0F2A2E',
+            sound: 'default',
+            enableVibrate: true,
+            showBadge: true,
+          });
+          await N.setNotificationChannelAsync('default', {
+            name: 'Default Notifications',
             importance: N.AndroidImportance.MAX,
             vibrationPattern: [0, 250, 250, 250],
             lightColor: '#0F2A2E',

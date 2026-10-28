@@ -7,6 +7,7 @@ if exist "app\build\outputs\apk\release\app-release.apk" del /f /q "app\build\ou
 call gradlew.bat assembleRelease
 if exist "app\build\outputs\apk\release\app-release.apk" (
     copy /y "app\build\outputs\apk\release\app-release.apk" "..\..\HotelCityPark-Owner.apk"
+    copy /y "app\build\outputs\apk\release\app-release.apk" "..\..\HotelCityPark-Admin.apk"
     copy /y "app\build\outputs\apk\release\app-release.apk" "..\..\public\HotelCityPark-Owner.apk"
     copy /y "app\build\outputs\apk\release\app-release.apk" "..\..\public\HotelCityPark-Admin.apk"
     copy /y "app\build\outputs\apk\release\app-release.apk" "..\..\public\HotelCityPark-Owner-v2.apk"

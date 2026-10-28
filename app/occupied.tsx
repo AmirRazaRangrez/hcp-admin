@@ -22,17 +22,29 @@ export default function Occupied() {
   const roomsWithPendingCount = rooms.filter((r: any) => Number(r.pending) > 0).length;
   const fullyPaidCount = rooms.length - roomsWithPendingCount;
 
+  const getValidRoom = (s: any) => {
+    const candidates = [s.room_number, s.room, s.raw?.room_number, s.raw?.room, s.id];
+    for (const item of candidates) {
+      if (item && item !== '-' && String(item).trim() !== '') {
+        const cleaned = cleanRoomNumber(item);
+        if (cleaned && cleaned !== '-') return cleaned;
+      }
+    }
+    return cleanRoomNumber(s.room || s.room_number || s.id);
+  };
+
   const handleOpenRoom = (s: any) => {
-    const roomId = String(s.room || s.id);
-    // Prime in-memory cache so room.tsx displays instantaneously with 0ms delay
+    const roomNum = getValidRoom(s);
+    const roomId = String(roomNum || s.room || s.id);
+    // Prime in-memory cache with isPartial flag so room.tsx displays instantaneously with 0ms delay while triggering a fresh live fetch
     try {
-      memCache?.set('room:' + roomId, { d: s, t: new Date().toISOString() });
+      memCache?.set('room:' + roomId, { d: { ...s, isPartial: true }, t: new Date(0).toISOString() });
     } catch (_) {}
     router.push({
       pathname: '/room',
       params: {
         id: roomId,
-        room: String(cleanRoomNumber(s.room || s.id)),
+        room: String(roomNum),
         bookingId: String(s.booking_id || s.id || ''),
         guest: String(s.guest || ''),
         total: String(s.total || s.roomCharge || ''),
@@ -86,7 +98,7 @@ export default function Occupied() {
       {/* Clean 2-Card Grid Layout with only room number */}
       <View style={styles.grid}>
         {rooms.map((s: any) => {
-          const roomNum = cleanRoomNumber(s.room || s.room_number || s.id);
+          const roomNum = getValidRoom(s);
           return (
             <Pressable
               key={s.id || roomNum}

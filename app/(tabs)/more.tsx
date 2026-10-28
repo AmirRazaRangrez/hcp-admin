@@ -32,5 +32,6 @@ export default function More(){const{user}=useAuth();const r=useRouter();const{d
       </Pressable>
     </View>
   </Card>
-  <Pressable onPress={()=>r.push('/bills')}><Card><Text style={{fontWeight:'700',color:c.ink}}>CRM Bills</Text><Text style={{color:c.mute,fontSize:12}}>Room Stays, Restaurant & Bar Guest Folios</Text></Card></Pressable>
+  <Pressable onPress={()=>r.push('/staff')}><Card><Text style={{fontWeight:'700',color:c.ink}}>👥 Staff Passwords &amp; PINs</Text><Text style={{color:c.mute,fontSize:12}}>View &amp; update login passwords for Front Desk, Restaurant, Bar &amp; Waiters</Text></Card></Pressable>
+  <Pressable onPress={()=>r.push('/bills')}><Card><Text style={{fontWeight:'700',color:c.ink}}>CRM Bills</Text><Text style={{color:c.mute,fontSize:12}}>Room Stays, Restaurant &amp; Bar Guest Folios</Text></Card></Pressable>
   <Pressable onPress={()=>r.push('/analytics')}><Card><Text style={{fontWeight:'700',color:c.ink}}>Analytics</Text></Card></Pressable><Pressable onPress={()=>r.push('/settings')}><Card><Text style={{fontWeight:'700',color:c.ink}}>Settings</Text></Card></Pressable></Screen>}

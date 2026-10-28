@@ -24,14 +24,15 @@ import {
   CloseIcon,
   CheckIcon,
   AlertIcon,
-  FilterIcon
+  FilterIcon,
+  EditIcon
 } from '../../src/lib/icons';
 
 export default function StoreScreen() {
   const params = useLocalSearchParams<{ filterStatus?: string }>();
 
-  // Primary View Mode: 'party' (Party-wise) vs 'bill' (Bill-wise)
-  const [currentView, setCurrentView] = useState<'party' | 'bill'>('party');
+  // Primary View Mode: 'party' (Party-wise) vs 'bill' (Bill-wise) vs 'parties' (All Parties Management)
+  const [currentView, setCurrentView] = useState<'party' | 'bill' | 'parties'>('party');
 
   // Search query (vendor name, phone, bill #)
   const [query, setQuery] = useState('');
@@ -68,6 +69,100 @@ export default function StoreScreen() {
   const [partyPayRef, setPartyPayRef] = useState<string>('');
   const [partyPaidBy, setPartyPaidBy] = useState<string>('Admin (Jaijeet sir)');
   const [partyPaying, setPartyPaying] = useState<boolean>(false);
+
+  // Party Management Modal State (Add / Edit Party)
+  const [vendorModalVisible, setVendorModalVisible] = useState(false);
+  const [editingVendor, setEditingVendor] = useState<any | null>(null);
+  const [vendorName, setVendorName] = useState('');
+  const [vendorMobile, setVendorMobile] = useState('');
+  const [vendorAddress, setVendorAddress] = useState('');
+  const [vendorSaving, setVendorSaving] = useState(false);
+
+  // Delete Party Confirmation Modal State
+  const [vendorToDelete, setVendorToDelete] = useState<any | null>(null);
+  const [vendorDeleting, setVendorDeleting] = useState<boolean>(false);
+
+  // Load Master Vendors List
+  const { data: rawVendors, reload: reloadVendors } = useLoad(
+    () => api.storeVendors(),
+    [],
+    'store_master_vendors'
+  );
+  const masterVendors: any[] = useMemo(() => {
+    return Array.isArray(rawVendors) ? rawVendors : [];
+  }, [rawVendors]);
+
+  const handleOpenAddVendor = () => {
+    setEditingVendor(null);
+    setVendorName('');
+    setVendorMobile('');
+    setVendorAddress('');
+    setVendorModalVisible(true);
+  };
+
+  const handleOpenEditVendor = (v: any) => {
+    setEditingVendor(v);
+    setVendorName(v.name || v.vendor_name || '');
+    setVendorMobile(v.mobile || v.phone || v.vendor_mobile || '');
+    setVendorAddress(v.address || v.category || '');
+    setVendorModalVisible(true);
+  };
+
+  const handleSaveVendor = async () => {
+    if (!vendorName.trim()) {
+      setNoticeModal({ title: 'Validation', message: 'Party Name is required', type: 'error' });
+      return;
+    }
+    setVendorSaving(true);
+    try {
+      if (editingVendor && (editingVendor.id || editingVendor.vendor_id)) {
+        const targetId = editingVendor.id || editingVendor.vendor_id;
+        await api.updateStoreVendor(targetId, {
+          name: vendorName.trim(),
+          mobile: vendorMobile.trim(),
+          address: vendorAddress.trim()
+        });
+        setNoticeModal({ title: 'Party Updated', message: `Party "${vendorName}" updated successfully!`, type: 'success' });
+      } else {
+        await api.createStoreVendor({
+          name: vendorName.trim(),
+          mobile: vendorMobile.trim(),
+          address: vendorAddress.trim()
+        });
+        setNoticeModal({ title: 'Party Added', message: `Party "${vendorName}" added successfully!`, type: 'success' });
+      }
+      setVendorModalVisible(false);
+      reloadVendors();
+      reloadAll();
+    } catch (err: any) {
+      setNoticeModal({ title: 'Error', message: err.message || 'Failed to save party', type: 'error' });
+    } finally {
+      setVendorSaving(false);
+    }
+  };
+
+  const handleDeleteVendor = (v: any) => {
+    setVendorToDelete(v);
+  };
+
+  const confirmDeleteVendor = async () => {
+    if (!vendorToDelete) return;
+    const targetId = vendorToDelete.id || vendorToDelete.vendor_id;
+    if (!targetId) return;
+    setVendorDeleting(true);
+    try {
+      await api.deleteStoreVendor(targetId);
+      const name = vendorToDelete.name || vendorToDelete.vendor_name || 'Party';
+      setVendorToDelete(null);
+      setNoticeModal({ title: 'Party Deleted', message: `Party "${name}" has been removed.`, type: 'info' });
+      reloadVendors();
+      reloadAll();
+    } catch (err: any) {
+      setNoticeModal({ title: 'Error', message: err.message || 'Failed to delete party', type: 'error' });
+    } finally {
+      setVendorDeleting(false);
+    }
+  };
 
   // Custom Themed Notice Modal State
   const [noticeModal, setNoticeModal] = useState<{ title: string; message: string; type?: 'success' | 'error' | 'info' } | null>(null);
@@ -437,6 +532,20 @@ export default function StoreScreen() {
       });
   }, [allParties, matchesFilter]);
 
+  // Master Vendors filtered by search query
+  const filteredMasterVendors = useMemo(() => {
+    let list = masterVendors;
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      list = list.filter((v: any) =>
+        (v.name || '').toLowerCase().includes(q) ||
+        (v.mobile || v.phone || '').toLowerCase().includes(q) ||
+        (v.address || v.category || '').toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [masterVendors, query]);
+
   // Active filters count for filter button badge
   const activeFiltersCount = useMemo(() => {
     let c = 0;
@@ -506,30 +615,6 @@ export default function StoreScreen() {
       });
 
       const isFull = amount >= Number(selectedBill.pending_amount);
-
-      // Trigger instant push notification to Storeman APK
-      try {
-        fetch('https://hlwmsllmqfdxfmqulrat.supabase.co/functions/v1/send-store-push', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer ' + 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhsd21zbGxtcWZkeGZtcXVscmF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3Mzc4MzgsImV4cCI6MjEwNTMxMzgzOH0.r7Nb8rEJTrZvprpf4G023nMY0suq2OqVGetG0I8esjk'
-          },
-          body: JSON.stringify({
-            title: isFull ? '✅ Bill Paid in Full' : '⚠️ Bill Paid Partly',
-            body: `₹${amount.toLocaleString('en-IN')} paid by Admin for ${selectedBill.vendor_name || 'Vendor'} (${formatBillNo(selectedBill)}) via ${formatModeShort(payMode)}. Status: ${isFull ? 'FULL' : 'PARTLY'}`,
-            type: 'store_payment',
-            topic: 'store_bills',
-            data: {
-              bill_id: String(selectedBill.id),
-              vendor_name: selectedBill.vendor_name || 'Vendor',
-              amount: String(amount),
-              status: isFull ? 'FULL' : 'PARTLY',
-              payment_mode: payMode
-            }
-          })
-        }).catch(() => {});
-      } catch (_) {}
 
       setNoticeModal({
         title: 'Payment Recorded',
@@ -673,38 +758,57 @@ export default function StoreScreen() {
         </Card>
 
         {/* TOP TOGGLE: Party-wise vs Bill-wise */}
+        {/* TOP TOGGLE: Party-wise vs Bill-wise vs Edit Parties */}
         <View style={st.viewToggleRow}>
+          {/* Party-wise button (count on top) */}
           <Pressable
             onPress={() => setCurrentView('party')}
-            style={[st.viewToggleBtn, currentView === 'party' && st.viewToggleBtnActive]}
+            style={[st.viewToggleBtnStacked, currentView === 'party' && st.viewToggleBtnActive]}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <UsersIcon size={15} color={currentView === 'party' ? '#fff' : c.ink} />
+            <View style={[st.viewToggleTopBadge, currentView === 'party' && st.viewToggleTopBadgeActive]}>
+              <Text style={[st.viewToggleTopBadgeText, currentView === 'party' && st.viewToggleTopBadgeTextActive]}>
+                {filteredParties.length}
+              </Text>
+            </View>
+            <View style={st.viewToggleBottomContent}>
+              <UsersIcon size={14} color={currentView === 'party' ? '#fff' : c.ink} />
               <Text style={[st.viewToggleLabel, currentView === 'party' && st.viewToggleLabelActive]}>
                 Party-wise
               </Text>
-              <View style={[st.viewToggleBadge, currentView === 'party' && st.viewToggleBadgeActive]}>
-                <Text style={[st.viewToggleBadgeText, currentView === 'party' && st.viewToggleBadgeTextActive]}>
-                  {filteredParties.length}
-                </Text>
-              </View>
             </View>
           </Pressable>
 
+          {/* Bill-wise button (count on top) */}
           <Pressable
             onPress={() => setCurrentView('bill')}
-            style={[st.viewToggleBtn, currentView === 'bill' && st.viewToggleBtnActive]}
+            style={[st.viewToggleBtnStacked, currentView === 'bill' && st.viewToggleBtnActive]}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <DocumentIcon size={15} color={currentView === 'bill' ? '#fff' : c.ink} />
+            <View style={[st.viewToggleTopBadge, currentView === 'bill' && st.viewToggleTopBadgeActive]}>
+              <Text style={[st.viewToggleTopBadgeText, currentView === 'bill' && st.viewToggleTopBadgeTextActive]}>
+                {filteredBills.length}
+              </Text>
+            </View>
+            <View style={st.viewToggleBottomContent}>
+              <DocumentIcon size={14} color={currentView === 'bill' ? '#fff' : c.ink} />
               <Text style={[st.viewToggleLabel, currentView === 'bill' && st.viewToggleLabelActive]}>
                 Bill-wise
               </Text>
-              <View style={[st.viewToggleBadge, currentView === 'bill' && st.viewToggleBadgeActive]}>
-                <Text style={[st.viewToggleBadgeText, currentView === 'bill' && st.viewToggleBadgeTextActive]}>
-                  {filteredBills.length}
-                </Text>
-              </View>
+            </View>
+          </Pressable>
+
+          {/* Parties: Edit symbol icon (✏️) */}
+          <Pressable
+            onPress={() => setCurrentView('parties')}
+            style={[st.viewToggleEditBtn, currentView === 'parties' && st.viewToggleBtnActive]}
+            accessibilityLabel="Manage Parties"
+          >
+            <View style={[st.viewToggleTopBadge, currentView === 'parties' && st.viewToggleTopBadgeActive]}>
+              <Text style={[st.viewToggleTopBadgeText, currentView === 'parties' && st.viewToggleTopBadgeTextActive]}>
+                {masterVendors.length}
+              </Text>
+            </View>
+            <View style={st.viewToggleBottomContent}>
+              <EditIcon size={16} color={currentView === 'parties' ? '#fff' : c.ink} />
             </View>
           </Pressable>
         </View>
@@ -1021,7 +1125,206 @@ export default function StoreScreen() {
             })}
           </>
         )}
+
+        {/* ========================================================= */}
+        {/* VIEW 3: ALL PARTIES (ADD / EDIT / DELETE)                 */}
+        {/* ========================================================= */}
+        {currentView === 'parties' && (
+          <View style={{ gap: 12 }}>
+            <Pressable
+              onPress={handleOpenAddVendor}
+              style={{
+                backgroundColor: c.ink,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                paddingVertical: 14,
+                paddingHorizontal: 18,
+                borderRadius: 14,
+                shadowColor: '#000',
+                shadowOpacity: 0.1,
+                shadowRadius: 6,
+                elevation: 3
+              }}
+            >
+              <Text style={{ fontSize: 16 }}>➕</Text>
+              <Text style={{ color: '#fff', fontSize: 15, fontWeight: '800' }}>Add New Party</Text>
+            </Pressable>
+
+            {filteredMasterVendors.length === 0 ? (
+              <Card style={st.emptyStateCard}>
+                <Text style={st.emptyStateIcon}>👥</Text>
+                <Text style={st.emptyStateTitle}>No Parties Found</Text>
+                <Text style={st.emptyStateSub}>Tap &ldquo;Add New Party&rdquo; above to register a new vendor.</Text>
+              </Card>
+            ) : (
+              filteredMasterVendors.map((v: any) => {
+                const partyBillStats = allParties.find((p: any) => String(p.vendor_id) === String(v.id) || p.vendor_name === v.name);
+                const pendingAmt = partyBillStats ? partyBillStats.total_pending : 0;
+                const totalBills = partyBillStats ? partyBillStats.total_bills : 0;
+
+                return (
+                  <Card key={String(v.id || v.name)} style={{ padding: 16, borderRadius: 16, gap: 10 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <View style={{ flex: 1, paddingRight: 8 }}>
+                        <Text style={{ fontSize: 16, fontWeight: '800', color: c.ink }}>{v.name}</Text>
+                        {v.mobile || v.phone ? (
+                          <Pressable onPress={() => Linking.openURL(`tel:${v.mobile || v.phone}`)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+                            <PhoneIcon size={12} color={c.brass} />
+                            <Text style={{ fontSize: 13, color: c.brass, fontWeight: '600' }}>{v.mobile || v.phone}</Text>
+                          </Pressable>
+                        ) : null}
+                        {v.address || v.category ? (
+                          <Text style={{ fontSize: 12, color: c.mute, marginTop: 2 }}>📍 {v.address || v.category}</Text>
+                        ) : null}
+                      </View>
+
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={{ fontSize: 11, color: c.mute }}>Pending Due</Text>
+                        <Text style={{ fontSize: 16, fontWeight: '800', color: pendingAmt > 0 ? '#DC2626' : '#059669', marginTop: 1 }}>
+                          {money(pendingAmt)}
+                        </Text>
+                        <Text style={{ fontSize: 11, color: c.mute, marginTop: 1 }}>{totalBills} Bills</Text>
+                      </View>
+                    </View>
+
+                    {/* Action Buttons: Edit & Delete */}
+                    <View style={{ flexDirection: 'row', gap: 10, borderTopWidth: 1, borderTopColor: '#f1f5f9', paddingTop: 10, marginTop: 4 }}>
+                      <Pressable
+                        onPress={() => handleOpenEditVendor(v)}
+                        style={{
+                          flex: 1,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 6,
+                          paddingVertical: 9,
+                          borderRadius: 10,
+                          backgroundColor: '#f1f5f9'
+                        }}
+                      >
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>✏️ Edit Party</Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => handleDeleteVendor(v)}
+                        style={{
+                          flex: 1,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 6,
+                          paddingVertical: 9,
+                          borderRadius: 10,
+                          backgroundColor: '#FEE2E2'
+                        }}
+                      >
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: '#991B1B' }}>🗑️ Delete</Text>
+                      </Pressable>
+                    </View>
+                  </Card>
+                );
+              })
+            )}
+          </View>
+        )}
       </Screen>
+
+      {/* ========================================================= */}
+      {/* ✏️ MODAL: ADD / EDIT PARTY MODAL                         */}
+      {/* ========================================================= */}
+      <Modal
+        visible={vendorModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setVendorModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={st.modalOverlay}
+        >
+          <View style={st.modalContainer}>
+            <View style={st.modalHeader}>
+              <Text style={st.modalTitle}>
+                {editingVendor ? '✏️ Edit Party' : '➕ Add New Party'}
+              </Text>
+              <Pressable onPress={() => setVendorModalVisible(false)} style={st.modalCloseBtn}>
+                <CloseIcon size={18} color={c.mute} />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={{ padding: 18, gap: 14 }}>
+              <View>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: c.ink, marginBottom: 6 }}>Party / Vendor Name *</Text>
+                <TextInput
+                  value={vendorName}
+                  onChangeText={setVendorName}
+                  placeholder="e.g. Tara Mutton Shop"
+                  placeholderTextColor={c.mute}
+                  style={st.searchInput}
+                />
+              </View>
+
+              <View>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: c.ink, marginBottom: 6 }}>Mobile Number (10 Digits)</Text>
+                <TextInput
+                  value={vendorMobile}
+                  onChangeText={setVendorMobile}
+                  placeholder="e.g. 9876543210"
+                  keyboardType="phone-pad"
+                  maxLength={10}
+                  placeholderTextColor={c.mute}
+                  style={st.searchInput}
+                />
+              </View>
+
+              <View>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: c.ink, marginBottom: 6 }}>Category / Address (Optional)</Text>
+                <TextInput
+                  value={vendorAddress}
+                  onChangeText={setVendorAddress}
+                  placeholder="e.g. Dairy, Grocery, Murarji Peth"
+                  placeholderTextColor={c.mute}
+                  style={st.searchInput}
+                />
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                <Pressable
+                  onPress={() => setVendorModalVisible(false)}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 12,
+                    borderRadius: 12,
+                    backgroundColor: '#f1f5f9',
+                    alignItems: 'center'
+                  }}
+                >
+                  <Text style={{ fontWeight: '700', color: c.mute }}>Cancel</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={handleSaveVendor}
+                  disabled={vendorSaving}
+                  style={{
+                    flex: 1.5,
+                    paddingVertical: 12,
+                    borderRadius: 12,
+                    backgroundColor: c.ink,
+                    alignItems: 'center',
+                    opacity: vendorSaving ? 0.7 : 1
+                  }}
+                >
+                  <Text style={{ fontWeight: '800', color: '#fff' }}>
+                    {vendorSaving ? 'Saving...' : editingVendor ? 'Update Party' : 'Save Party'}
+                  </Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* ========================================================= */}
       {/* 🔍 MODAL: ADVANCED FILTER POPUP                           */}
@@ -1580,6 +1883,49 @@ export default function StoreScreen() {
       </Modal>
 
       {/* ========================================================= */}
+      {/* 🗑️ MODAL: DELETE PARTY CONFIRMATION                       */}
+      {/* ========================================================= */}
+      <Modal
+        visible={!!vendorToDelete}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!vendorDeleting) setVendorToDelete(null); }}
+      >
+        <View style={st.noticeOverlay}>
+          <View style={st.noticeContainer}>
+            <View style={[st.noticeIconCircle, st.noticeIconCircleError]}>
+              <Text style={{ fontSize: 26 }}>🗑️</Text>
+            </View>
+            <Text style={st.noticeTitle}>Delete Party?</Text>
+            <Text style={st.noticeMessage}>
+              Are you sure you want to delete &ldquo;{vendorToDelete?.name || vendorToDelete?.vendor_name || 'this party'}&rdquo;?
+              {'\n'}This action will remove the party from the system.
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 8 }}>
+              <Pressable
+                disabled={vendorDeleting}
+                onPress={() => setVendorToDelete(null)}
+                style={[st.noticeBtn, { flex: 1, backgroundColor: '#f1f5f9' }]}
+              >
+                <Text style={{ color: c.ink, fontSize: 14, fontWeight: '700' }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                disabled={vendorDeleting}
+                onPress={confirmDeleteVendor}
+                style={[st.noticeBtn, st.noticeBtnError, { flex: 1.3, opacity: vendorDeleting ? 0.7 : 1 }]}
+              >
+                {vendorDeleting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={st.noticeBtnText}>Yes, Delete</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ========================================================= */}
       {/* 🔔 CUSTOM BRANDED NOTICE MODAL (Replaces OS Alert)         */}
       {/* ========================================================= */}
       <Modal
@@ -1703,12 +2049,62 @@ const st = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center'
   },
+  viewToggleBtnStacked: {
+    flex: 1,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52
+  },
+  viewToggleEditBtn: {
+    width: 58,
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52
+  },
   viewToggleBtnActive: {
     backgroundColor: c.ink,
     borderColor: c.ink
   },
+  viewToggleTopBadge: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 8,
+    paddingVertical: 1.5,
+    borderRadius: 10,
+    minWidth: 26,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  viewToggleTopBadgeActive: {
+    backgroundColor: 'rgba(255,255,255,0.22)'
+  },
+  viewToggleTopBadgeText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: c.ink
+  },
+  viewToggleTopBadgeTextActive: {
+    color: '#fff'
+  },
+  viewToggleBottomContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 4
+  },
   viewToggleLabel: {
-    fontSize: 13.5,
+    fontSize: 12.5,
     fontWeight: '700',
     color: c.ink
   },

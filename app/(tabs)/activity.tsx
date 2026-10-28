@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { api } from '../../src/api/client';
-import { Screen, Card, Badge, useLoad } from '../../src/lib/ui';
-import { c, when } from '../../src/lib/theme';
+import { Screen, Card, Badge, useLoad, memCache } from '../../src/lib/ui';
+import { c, when, cleanRoomNumber } from '../../src/lib/theme';
 import {
   BellIcon,
   CheckoutIcon,
@@ -161,7 +161,7 @@ export default function Activity() {
       {/* Date Filter Status Badge */}
       {todayOnly ? (
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FEF3C7', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, marginBottom: 12, borderWidth: 1, borderColor: '#FDE68A' }}>
-          <Text style={{ fontSize: 12, fontWeight: '750', color: '#B45309' }}>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: '#B45309' }}>
             📅 Showing Today's {filter === 'checkin' ? 'Check-ins' : (filter === 'checkout' ? 'Check-outs' : 'Activity')} Only
           </Text>
           <Pressable onPress={() => setTodayOnly(false)}>
@@ -205,14 +205,52 @@ export default function Activity() {
 
         const handlePress = () => {
           if (isCheckout) {
+            const cleanR = cleanRoomNumber(a.room);
+            const meta = a.meta || {};
+            const payments = Array.isArray(meta.payments) ? meta.payments : [];
+            const checkoutStayData = {
+              isCheckout: true,
+              id: String(meta.bookingId || a.billId || a.id),
+              bookingId: meta.bookingId,
+              room: a.room,
+              roomNumber: a.room,
+              rooms: meta.roomNumbers || (a.room ? String(a.room).split(',').map((s: string) => s.trim()) : []),
+              guest: a.guest || meta.guestName || 'Valued Guest',
+              guestName: a.guest || meta.guestName || 'Valued Guest',
+              mobile: meta.mobile || '',
+              adults: Number(meta.adults || 1),
+              children: Number(meta.children || 0),
+              mealPlan: meta.mealPlan || 'without_breakfast',
+              roomCount: Number(meta.roomCount || 1),
+              checkIn: meta.checkinTime || a.created_at,
+              checkOut: meta.checkoutTime || a.created_at,
+              checkoutTime: meta.checkoutTime || a.created_at,
+              checkedInBy: meta.checkedInBy || 'Front Desk',
+              checkedOutBy: meta.checkedOutBy || a.by || 'Staff',
+              total: Number(a.total || meta.netSettle || 0),
+              paid: Number(a.total || meta.netSettle || 0),
+              pending: 0,
+              payments: payments,
+              source: meta.source || 'Front Desk'
+            };
+
+            if (cleanR && memCache?.set) {
+              memCache.set('room:' + cleanR, { d: checkoutStayData, t: new Date().toISOString() });
+            }
+            if (a.room && memCache?.set) {
+              memCache.set('room:' + String(a.room).trim(), { d: checkoutStayData, t: new Date().toISOString() });
+            }
+
             router.push({
               pathname: '/room',
               params: {
                 id: String(a.room || a.billId || a.id),
                 isCheckout: 'true',
                 room: String(a.room || ''),
-                guest: String(a.guest || ''),
-                total: String(a.total || 0)
+                guest: String(a.guest || meta.guestName || ''),
+                total: String(a.total || 0),
+                bookingId: String(meta.bookingId || a.billId || ''),
+                payments: payments.length > 0 ? JSON.stringify(payments) : ''
               }
             });
           } else if ((isCheckin || isStayFolio) && a.room) {

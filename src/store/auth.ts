@@ -1,4 +1,5 @@
 import {create} from 'zustand';
+import {Platform} from 'react-native';
 import * as SS from '../lib/storage';
 import axios from 'axios';
 import {SERVER_URL,OWNER_USERNAME,OWNER_PASSWORD,DEMO_MODE,CLOUD_TUNNEL_URL,fetchCloudTunnelUrl} from '../config';
@@ -29,10 +30,12 @@ export const useAuth = create<S>((set, get) => ({
   async load() {
     if (DEMO_MODE) { set({baseUrl: 'demo', token: 'demo', user: DEMO_USER, authError: null, ready: true}); return; }
     let initialBase = SERVER_URL;
-    if (typeof window !== 'undefined' && window.location?.protocol === 'https:') {
-      initialBase = CLOUD_TUNNEL_URL;
+    if ((typeof window !== 'undefined' && window.location?.protocol === 'https:') || Platform.OS !== 'web') {
+      if (typeof window !== 'undefined' && window.location?.protocol === 'https:') {
+        initialBase = CLOUD_TUNNEL_URL;
+      }
       fetchCloudTunnelUrl().then(fresh => {
-        if (fresh && fresh !== get().baseUrl) {
+        if (fresh && fresh.startsWith('https://') && fresh !== get().baseUrl) {
           set({ baseUrl: fresh });
         }
       }).catch(() => {});
