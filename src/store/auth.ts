@@ -81,7 +81,7 @@ export const useAuth = create<S>((set, get) => ({
     return pending;
   },
 
-  async login(b, t, u) { await SS.setItemAsync('base', SERVER_URL); await SS.setItemAsync('tok', t); await SS.setItemAsync('usr', JSON.stringify(u)); set({baseUrl: b, token: t, user: u}); },
+  async login(b, t, u) { await SS.setItemAsync('base', b); await SS.setItemAsync('tok', t); await SS.setItemAsync('usr', JSON.stringify(u)); set({baseUrl: b, token: t, user: u}); },
 
   // There is no login screen, so "log out" means: drop the saved session and sign in fresh.
   async logout() {
