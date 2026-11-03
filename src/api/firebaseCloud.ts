@@ -573,7 +573,23 @@ export async function fetchRoomChargesInbox(filterDate?: string): Promise<any[]>
         const extra = Number(meta.extra || 0);
         if (extra > 0) itemsArr.push({ name: 'Extra Bed / Service', qty: 1, price: extra });
         if (itemsArr.length === 0) itemsArr.push({ name: `Room Tariff (${meta.roomType || 'Stay'})`, qty: 1, price: Number(c.grand_total || meta.grandTotal || meta.total || 0) });
-      } else if (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('[')) {
+      } else if (Array.isArray(meta.items)) {
+        itemsArr = meta.items.map((it: any) => {
+          let itName = it.name || it.item_name || 'Item';
+          if (typeof itName === 'string' && itName.trim().startsWith('{')) {
+            try { const inner = JSON.parse(itName); itName = inner.name || inner.item_name || 'Item'; } catch {}
+          }
+          return { name: itName, qty: Number(it.qty || it.quantity || 1), price: Number(it.price || 0), notes: it.notes || '' };
+        });
+      } else if (Array.isArray(meta.items)) {
+      itemsArr = meta.items.map((it: any) => {
+        let itName = it.name || it.item_name || 'Item';
+        if (typeof itName === 'string' && itName.trim().startsWith('{')) {
+          try { const inner = JSON.parse(itName); itName = inner.name || inner.item_name || 'Item'; } catch {}
+        }
+        return { name: itName, qty: Number(it.qty || it.quantity || 1), price: Number(it.price || 0), notes: it.notes || '' };
+      });
+    } else if (typeof c.items_summary === 'string' && c.items_summary.trim().startsWith('[')) {
         try {
           const parsed = JSON.parse(c.items_summary);
           if (Array.isArray(parsed)) {
@@ -591,18 +607,46 @@ export async function fetchRoomChargesInbox(filterDate?: string): Promise<any[]>
         itemsArr = [{ name: c.items_summary || (dept + ' Order'), qty: 1, price: Number(c.grand_total || 0) }];
       }
 
-      const grandTot = Number(c.grand_total || meta.grandTotal || meta.total || 0);
-      const subTot = Number(isFolio ? (meta.roomCharge || c.subtotal || grandTot) : (c.subtotal || grandTot));
+      const rawDestType = String(c.destination_type || meta.destination_type || '').toLowerCase();
+      const destLabel = String(c.destination_label || meta.destination_label || '').trim();
+      const rawRoom = String(c.room_number || meta.room_number || '').trim();
+      const isTable = rawDestType === 'table' || destLabel.startsWith('T') || (!rawDestType && !/^\d+$/.test(rawRoom) && rawRoom.startsWith('T'));
+      const isParcel = rawDestType === 'parcel' || rawDestType === 'takeaway' || destLabel.toLowerCase().includes('parcel');
+
+      let resolvedCustName = meta.customer_name || c.customer_name || '';
+      if (!resolvedCustName) {
+        if (isFolio) {
+          resolvedCustName = meta.guestName || (rawRoom ? `Room ${rawRoom}` : 'Room Stay');
+        } else if (isTable) {
+          resolvedCustName = `Walk-in (Table ${destLabel || rawRoom})`;
+        } else if (isParcel) {
+          resolvedCustName = `Takeaway Parcel (${destLabel || 'P'})`;
+        } else if (rawRoom) {
+          resolvedCustName = `Room Service · Room ${rawRoom}`;
+        } else {
+          resolvedCustName = 'Walk-in Guest';
+        }
+      }
+
+      const grandTot = Number(c.grand_total || meta.grand_total || meta.total || 0);
+      const taxAmt = Number(c.gst ?? meta.gst ?? meta.tax ?? 0);
+      const discAmt = Number((isFolio ? meta.discount : (c.discount || meta.discount)) || 0);
+      const subTot = Number(isFolio ? (meta.roomCharge || c.subtotal || grandTot) : (c.subtotal || meta.subtotal || (grandTot - taxAmt + discAmt)));
+
       return {
         id: c.order_id || c.id,
         order_number: isFolio ? (meta.voucherNumber || c.bill_no || `R-${c.id}`) : (c.bill_no || ('#' + (c.order_id || c.id))),
         dept,
-        room_number: c.room_number,
-        customer_name: (isFolio && meta.guestName) ? meta.guestName : `Room ${c.room_number}`,
+        destination_type: isTable ? 'table' : isParcel ? 'parcel' : (rawDestType || 'room'),
+        destination_label: destLabel || (isTable ? rawRoom : ''),
+        room_number: isTable || isParcel ? '' : rawRoom,
+        customer_name: resolvedCustName,
         total: grandTot,
         subtotal: subTot,
-        tax: Number(c.gst || meta.tax || 0),
-        discount: Number((isFolio && meta.discount) || 0),
+        tax: taxAmt,
+        discount: discAmt,
+        notes: meta.notes || c.notes || '',
+        waiter_name: meta.waiter_name || c.waiter_name || '',
         payment_mode: isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : (c.payment_mode || 'room_folio'),
         is_paid: isFolio ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0) : ((c.status === 'pending' || c.status === 'unpaid') ? 0 : 1),
         items_json: JSON.stringify(itemsArr),
@@ -846,20 +890,47 @@ export async function fetchSingleOrderOrCharge(cleanId: string): Promise<any | n
       itemsArr = [{ name: c.items_summary || (effDept + ' Order'), qty: 1, price: Number(c.grand_total || 0) }];
     }
 
-    const cTot = Number(c.grand_total || meta.grandTotal || meta.total || 0);
-    const mTot = Number(isFolio ? (meta.roomCharge || c.subtotal || cTot) : (c.subtotal || cTot));
+    const rawDestType = String(c.destination_type || meta.destination_type || '').toLowerCase();
+    const destLabel = String(c.destination_label || meta.destination_label || '').trim();
+    const rawRoom = String(c.room_number || meta.room_number || '').trim();
+    const isTable = rawDestType === 'table' || destLabel.startsWith('T') || (!rawDestType && !/^\d+$/.test(rawRoom) && rawRoom.startsWith('T'));
+    const isParcel = rawDestType === 'parcel' || rawDestType === 'takeaway' || destLabel.toLowerCase().includes('parcel');
+
+    let resolvedCustName = meta.customer_name || c.customer_name || '';
+    if (!resolvedCustName) {
+      if (isFolio) {
+        resolvedCustName = meta.guestName || (rawRoom ? `Room ${rawRoom}` : 'Room Stay');
+      } else if (isTable) {
+        resolvedCustName = `Walk-in (Table ${destLabel || rawRoom})`;
+      } else if (isParcel) {
+        resolvedCustName = `Takeaway Parcel (${destLabel || 'P'})`;
+      } else if (rawRoom) {
+        resolvedCustName = `Room Service · Room ${rawRoom}`;
+      } else {
+        resolvedCustName = 'Walk-in Guest';
+      }
+    }
+
+    const cTot = Number(c.grand_total || meta.grand_total || meta.total || 0);
+    const taxAmt = Number(c.gst ?? meta.gst ?? meta.tax ?? 0);
+    const discAmt = Number((isFolio ? meta.discount : (c.discount || meta.discount)) || 0);
+    const mTot = Number(isFolio ? (meta.roomCharge || c.subtotal || cTot) : (c.subtotal || meta.subtotal || (cTot - taxAmt + discAmt)));
 
     return {
       order: {
         id: c.order_id || c.id,
         order_number: isFolio ? (meta.voucherNumber || c.bill_no || `R-${c.id}`) : (c.bill_no || ('#' + cleanId)),
         dept: effDept,
-        room_number: c.room_number,
-        customer_name: (isFolio && meta.guestName) || `Room ${c.room_number}`,
+        destination_type: isTable ? 'table' : isParcel ? 'parcel' : (rawDestType || 'room'),
+        destination_label: destLabel || (isTable ? rawRoom : ''),
+        room_number: isTable || isParcel ? '' : rawRoom,
+        customer_name: resolvedCustName,
         total: cTot,
         subtotal: mTot,
-        tax: Number(c.gst || meta.tax || 0),
-        discount: Number((isFolio && meta.discount) || 0),
+        tax: taxAmt,
+        discount: discAmt,
+        notes: meta.notes || c.notes || '',
+        waiter_name: meta.waiter_name || c.waiter_name || '',
         payment_mode: isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : (c.payment_mode || 'room_folio'),
         is_paid: isFolio ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0) : ((c.status === 'pending' || c.status === 'unpaid') ? 0 : 1),
         items_json: JSON.stringify(itemsArr),

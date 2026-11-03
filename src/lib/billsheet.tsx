@@ -15,8 +15,23 @@ import {
 // ---------- helpers ----------
 export const itemsOf = (o: any) => {
   try {
-    const x = JSON.parse(o?.items_json || '[]');
-    return Array.isArray(x) ? x : [];
+    const raw = o?.items || o?.items_json || o?.items_summary;
+    const x = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
+    if (Array.isArray(x)) {
+      return x.flatMap((it: any) => {
+        if (it && Array.isArray(it.items)) return it.items;
+        if (typeof it?.name === 'string' && (it.name.trim().startsWith('{') || it.name.trim().startsWith('['))) {
+          try {
+            const inner = JSON.parse(it.name.trim());
+            if (Array.isArray(inner.items)) return inner.items;
+            if (inner.name || inner.item_name) return [inner];
+          } catch {}
+        }
+        return [it];
+      });
+    }
+    if (x && Array.isArray(x.items)) return x.items;
+    return [];
   } catch {
     return [];
   }
@@ -24,7 +39,16 @@ export const itemsOf = (o: any) => {
 
 const qtyOf = (i: any) => Number(i.qty ?? i.quantity ?? 1) || 1;
 const priceOf = (i: any) => Number(i.price ?? i.rate ?? 0) || 0;
-const nameOf = (i: any) => i.name || i.item_name || 'Item';
+const nameOf = (i: any) => {
+  let n = i.name || i.item_name || 'Item';
+  if (typeof n === 'string' && (n.trim().startsWith('{') || n.trim().startsWith('['))) {
+    try {
+      const inner = JSON.parse(n.trim());
+      if (inner.name || inner.item_name) return inner.name || inner.item_name;
+    } catch {}
+  }
+  return n;
+};
 export const daysOld = (s?: string) => {
   const t = new Date(String(s || '').replace(' ', 'T')).getTime();
   return isNaN(t) ? 0 : Math.floor((Date.now() - t) / 864e5);
