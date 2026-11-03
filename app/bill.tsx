@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, Pressable, Platform, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { api, billCache } from '../src/api/client';
 import { Screen, Card, Badge, useLoad } from '../src/lib/ui';
@@ -84,14 +84,41 @@ const items = (o: any) => {
   }
 };
 
-const formatPaymentMode = (mode: any) => {
-  if (!mode) return 'Pending / Unpaid';
-  const m = String(mode).toLowerCase().trim();
-  if (m === 'room_folio' || m === 'room' || m.includes('folio')) return 'Room Folio';
+const formatPaymentMode = (mode: any, o: any) => {
+  const m = String(mode || o?.payment_mode || '').toLowerCase().trim();
+  const isPaid = Boolean(o?.is_paid && Number(o?.is_paid) !== 0 && o?.status !== 'pending' && o?.status !== 'unpaid');
+
+  let meta: any = {};
+  if (o?.meta) meta = o.meta;
+  else if (typeof o?.items_summary === 'string' && o?.items_summary.trim().startsWith('{')) {
+    try { meta = JSON.parse(o.items_summary); } catch {}
+  }
+
+  const settledRoom = String(
+    o?.settled_room ||
+    meta?.target_room_number ||
+    meta?.charge_to_room ||
+    meta?.room_number ||
+    (o?.room_number && /^\d+$/.test(String(o.room_number).trim()) ? o.room_number : '') ||
+    ''
+  ).replace(/^RS-/i, '').replace(/^Room\s*/i, '').trim();
+
+  // If settled to room
+  if (m === 'room_folio' || m === 'room' || m.includes('folio') || (settledRoom && m !== 'cash' && m !== 'upi' && m !== 'card')) {
+    const rLabel = settledRoom ? `Room ${settledRoom}` : 'Room';
+    return isPaid ? `${rLabel} · Room Settled (paid)` : `${rLabel} · Room Settled (pending)`;
+  }
+
+  if (m === 'upi' || m === 'online' || m === 'qr') return 'UPI';
   if (m === 'cash') return 'Cash';
-  if (m === 'upi' || m === 'online' || m === 'qr') return 'UPI / Online';
-  if (m === 'card') return 'Card';
+  if (m === 'card' || m === 'pos') return 'Card';
+  if (m === 'owner') return 'Owner Account';
   if (m === 'complimentary' || m === 'comp') return 'Complimentary';
+  if (m === 'split') return 'Split Payment';
+
+  if (!m) {
+    return isPaid ? 'Paid' : 'Pending';
+  }
   return String(mode).toUpperCase();
 };
 
@@ -173,9 +200,12 @@ const getOrderHeaderInfo = (o: any, dept: string) => {
   // 3. Walk-in / Table Dine-in
   const tLabel = destLabel || (rawRoom && !/^\d+$/.test(rawRoom) ? rawRoom : '') || 'Dine-in';
   const tableDisplay = tLabel.toUpperCase().startsWith('T') ? tLabel : `Table ${tLabel}`;
-  const guest = o.customer_name && o.customer_name !== 'Walk-in' && !o.customer_name.startsWith('Room') ? o.customer_name : '';
+  let custName = String(o.customer_name || '').trim();
+  if (custName.toLowerCase().startsWith('walk-in') || custName.toLowerCase().startsWith('table')) {
+    custName = '';
+  }
   return {
-    title: guest ? `${guest} (${tableDisplay})` : `Walk-in · ${tableDisplay}`,
+    title: custName ? `${custName} (${tableDisplay})` : `Walk-in · ${tableDisplay}`,
     subtitle: `${deptLabel} · ${when(o.created_at)} · ${tableDisplay} (Dine-in)`,
     destBadge: tableDisplay
   };
@@ -293,7 +323,7 @@ export default function Bill() {
             <R l="Tax (GST)" v={money(taxVal)} />
             <View style={{ height: 1, backgroundColor: c.line, marginVertical: 4 }} />
             <R b l="Grand total" v={money(grandTotalVal)} />
-            <R l="Paid via" v={formatPaymentMode(o.payment_mode)} />
+            <R l="Paid via" v={formatPaymentMode(o.payment_mode, o)} />
           </Card>
 
           <Text style={{ fontWeight: '800', color: c.ink, fontSize: 16, marginTop: 4 }}>Modification history</Text>
@@ -315,55 +345,6 @@ export default function Bill() {
               )}
             </Card>
           ))}
-
-          <View style={{ marginTop: 12 }}>
-            <Pressable
-              onPress={() => {
-                const billLabel = o.order_number || `#${o.id}`;
-                const confirmMsg = `Are you sure you want to permanently delete ${billLabel}? This will remove it from the system and cannot be undone.`;
-                const doDelete = async () => {
-                  try {
-                    await api.deleteBill(dept!, o.id || o.order_number);
-                    if (Platform.OS === 'web') {
-                      window.alert('Bill deleted successfully.');
-                    } else {
-                      Alert.alert('Deleted', 'Bill deleted successfully.');
-                    }
-                    router.back();
-                  } catch (err: any) {
-                    if (Platform.OS === 'web') {
-                      window.alert(err.message || 'Could not delete bill.');
-                    } else {
-                      Alert.alert('Error', err.message || 'Could not delete bill.');
-                    }
-                  }
-                };
-
-                if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
-                  if (window.confirm(confirmMsg)) doDelete();
-                } else {
-                  Alert.alert('Delete Bill', confirmMsg, [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Yes, Delete', style: 'destructive', onPress: doDelete }
-                  ]);
-                }
-              }}
-              style={({ pressed }) => ({
-                backgroundColor: pressed ? '#FEE2E2' : '#FFFFFF',
-                borderColor: '#F87171',
-                borderWidth: 1.5,
-                paddingVertical: 12,
-                paddingHorizontal: 16,
-                borderRadius: 12,
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexDirection: 'row',
-                gap: 8
-              })}
-            >
-              <Text style={{ color: '#DC2626', fontSize: 14, fontWeight: '800' }}>🗑️ Delete This Bill</Text>
-            </Pressable>
-          </View>
         </>
       )}
     </Screen>

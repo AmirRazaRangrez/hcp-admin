@@ -633,6 +633,46 @@ export async function fetchRoomChargesInbox(filterDate?: string): Promise<any[]>
       const discAmt = Number((isFolio ? meta.discount : (c.discount || meta.discount)) || 0);
       const subTot = Number(isFolio ? (meta.roomCharge || c.subtotal || grandTot) : (c.subtotal || meta.subtotal || (grandTot - taxAmt + discAmt)));
 
+      const rawPMode = String(
+        c.payment_mode ||
+        meta.payment_mode ||
+        meta.payment_method ||
+        meta.paymentMode ||
+        meta.pay_mode ||
+        meta.method ||
+        meta.paid_via ||
+        ''
+      ).toLowerCase().trim();
+
+      let resolvedPaymentMode = 'cash';
+      if (rawPMode.includes('upi') || rawPMode.includes('qr') || rawPMode.includes('online')) {
+        resolvedPaymentMode = 'upi';
+      } else if (rawPMode.includes('card') || rawPMode.includes('pos')) {
+        resolvedPaymentMode = 'card';
+      } else if (rawPMode.includes('room') || rawPMode.includes('folio') || isFolio) {
+        resolvedPaymentMode = 'room_folio';
+      } else if (rawPMode.includes('owner')) {
+        resolvedPaymentMode = 'owner';
+      } else if (rawPMode.includes('cash')) {
+        resolvedPaymentMode = 'cash';
+      } else if (rawPMode) {
+        resolvedPaymentMode = rawPMode;
+      } else if (rawRoom && !isTable && !isParcel) {
+        resolvedPaymentMode = 'room_folio';
+      }
+
+      const settledRoom = String(
+        meta.target_room_number ||
+        meta.charge_to_room ||
+        meta.room_number ||
+        (!isTable && !isParcel && /^\d+$/.test(rawRoom) ? rawRoom : '') ||
+        ''
+      ).replace(/^RS-/i, '').replace(/^Room\s*/i, '').trim();
+
+      const isPaidVal = isFolio
+        ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0)
+        : (c.is_paid !== undefined ? (Number(c.is_paid) === 1 ? 1 : 0) : (meta.is_paid !== undefined ? (Number(meta.is_paid) === 1 ? 1 : 0) : ((c.status === 'pending' || c.status === 'unpaid') ? 0 : 1)));
+
       return {
         id: c.order_id || c.id,
         order_number: isFolio ? (meta.voucherNumber || c.bill_no || `R-${c.id}`) : (c.bill_no || ('#' + (c.order_id || c.id))),
@@ -640,6 +680,7 @@ export async function fetchRoomChargesInbox(filterDate?: string): Promise<any[]>
         destination_type: isTable ? 'table' : isParcel ? 'parcel' : (rawDestType || 'room'),
         destination_label: destLabel || (isTable ? rawRoom : ''),
         room_number: isTable || isParcel ? '' : rawRoom,
+        settled_room: settledRoom,
         customer_name: resolvedCustName,
         total: grandTot,
         subtotal: subTot,
@@ -647,8 +688,8 @@ export async function fetchRoomChargesInbox(filterDate?: string): Promise<any[]>
         discount: discAmt,
         notes: meta.notes || c.notes || '',
         waiter_name: meta.waiter_name || c.waiter_name || '',
-        payment_mode: isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : (c.payment_mode || 'room_folio'),
-        is_paid: isFolio ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0) : ((c.status === 'pending' || c.status === 'unpaid') ? 0 : 1),
+        payment_mode: isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : resolvedPaymentMode,
+        is_paid: isPaidVal,
         items_json: JSON.stringify(itemsArr),
         created_at: c.created_at
       };
@@ -916,6 +957,46 @@ export async function fetchSingleOrderOrCharge(cleanId: string): Promise<any | n
     const discAmt = Number((isFolio ? meta.discount : (c.discount || meta.discount)) || 0);
     const mTot = Number(isFolio ? (meta.roomCharge || c.subtotal || cTot) : (c.subtotal || meta.subtotal || (cTot - taxAmt + discAmt)));
 
+    const rawPMode = String(
+      c.payment_mode ||
+      meta.payment_mode ||
+      meta.payment_method ||
+      meta.paymentMode ||
+      meta.pay_mode ||
+      meta.method ||
+      meta.paid_via ||
+      ''
+    ).toLowerCase().trim();
+
+    let resolvedPaymentMode = 'cash';
+    if (rawPMode.includes('upi') || rawPMode.includes('qr') || rawPMode.includes('online')) {
+      resolvedPaymentMode = 'upi';
+    } else if (rawPMode.includes('card') || rawPMode.includes('pos')) {
+      resolvedPaymentMode = 'card';
+    } else if (rawPMode.includes('room') || rawPMode.includes('folio') || isFolio) {
+      resolvedPaymentMode = 'room_folio';
+    } else if (rawPMode.includes('owner')) {
+      resolvedPaymentMode = 'owner';
+    } else if (rawPMode.includes('cash')) {
+      resolvedPaymentMode = 'cash';
+    } else if (rawPMode) {
+      resolvedPaymentMode = rawPMode;
+    } else if (rawRoom && !isTable && !isParcel) {
+      resolvedPaymentMode = 'room_folio';
+    }
+
+    const settledRoom = String(
+      meta.target_room_number ||
+      meta.charge_to_room ||
+      meta.room_number ||
+      (!isTable && !isParcel && /^\d+$/.test(rawRoom) ? rawRoom : '') ||
+      ''
+    ).replace(/^RS-/i, '').replace(/^Room\s*/i, '').trim();
+
+    const isPaidVal = isFolio
+      ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0)
+      : (c.is_paid !== undefined ? (Number(c.is_paid) === 1 ? 1 : 0) : (meta.is_paid !== undefined ? (Number(meta.is_paid) === 1 ? 1 : 0) : ((c.status === 'pending' || c.status === 'unpaid') ? 0 : 1)));
+
     return {
       order: {
         id: c.order_id || c.id,
@@ -924,6 +1005,7 @@ export async function fetchSingleOrderOrCharge(cleanId: string): Promise<any | n
         destination_type: isTable ? 'table' : isParcel ? 'parcel' : (rawDestType || 'room'),
         destination_label: destLabel || (isTable ? rawRoom : ''),
         room_number: isTable || isParcel ? '' : rawRoom,
+        settled_room: settledRoom,
         customer_name: resolvedCustName,
         total: cTot,
         subtotal: mTot,
@@ -931,8 +1013,8 @@ export async function fetchSingleOrderOrCharge(cleanId: string): Promise<any | n
         discount: discAmt,
         notes: meta.notes || c.notes || '',
         waiter_name: meta.waiter_name || c.waiter_name || '',
-        payment_mode: isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : (c.payment_mode || 'room_folio'),
-        is_paid: isFolio ? ((Number(meta.pending) || 0) <= 0 ? 1 : 0) : ((c.status === 'pending' || c.status === 'unpaid') ? 0 : 1),
+        payment_mode: isFolio ? (meta.paymentMode ? String(meta.paymentMode).toUpperCase() : 'CASH') : resolvedPaymentMode,
+        is_paid: isPaidVal,
         items_json: JSON.stringify(itemsArr),
         created_at: c.created_at
       },
