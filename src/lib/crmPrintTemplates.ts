@@ -1418,9 +1418,9 @@ export function buildGuestPaymentSummaryHTML(data) {
     // Single-line particulars without redundant guest name in parentheses
     // "Advance payment at check-in for Room 101 (Md Yahya Ab Wahid Mundewadi)" -> "paid while checkin : checkin"
     if (/advance\s+payment\s+at\s+check-?in/i.test(rawPurpose)) {
-      purposeStr = 'paid while checkin : checkin';
+      purposeStr = 'Paid While CheckIn';
     } else if (/settlement\s+at\s+check-?out/i.test(rawPurpose)) {
-      purposeStr = 'paid during checkout : settlement';
+      purposeStr = 'Paid While Checkout';
     } else {
       purposeStr = rawPurpose.replace(/\s*\([^)]*\)/g, '').trim();
     }
@@ -2699,7 +2699,7 @@ export function buildFinalBillA4HTML(room = {}, calc = {}, settlement = {}) {
           ${discountAmt > 0 ? `
           <tr style="background: transparent;">
             <td style="padding: 2.2px 6px; font-weight: 400; color: #000; width: ${particularsWidth};">
-              Less Discount @${discountPct > 0 ? discountPct.toFixed(2) : ((discountAmt / grossTariff) * 100).toFixed(2)}%
+              Less Discount 
             </td>
             ${dates.map(d => {
               const entry = entryMap[d];
