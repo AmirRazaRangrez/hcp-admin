@@ -5,7 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Screen, Card } from '../src/lib/ui';
 import { useAuth } from '../src/store/auth';
 import { c } from '../src/lib/theme';
-import { TrashIcon, ReceiptIcon } from '../src/lib/icons';
+import { TrashIcon, ReceiptIcon, KeyIcon } from '../src/lib/icons';
 
 export default function Settings() {
   const router = useRouter();
@@ -39,6 +39,16 @@ export default function Settings() {
             <Text style={styles.actionText}>Clear Saved Offline Data</Text>
           </View>
           <Text style={styles.actionSub}>Resets local cached pages so everything refetches fresh.</Text>
+        </Card>
+      </Pressable>
+
+      <Pressable onPress={() => router.push('/staff')} style={({ pressed }) => [pressed && { opacity: 0.8 }]}>
+        <Card style={styles.card}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <KeyIcon size={18} color="#D97706" />
+            <Text style={styles.actionText}>Staff Passwords & PINs</Text>
+          </View>
+          <Text style={styles.actionSub}>View & change passwords for Front Desk, Restaurant, Bar & Waiters.</Text>
         </Card>
       </Pressable>
 

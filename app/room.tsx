@@ -906,6 +906,24 @@ export default function RoomDetails() {
   // 8. checkin tmie
   const checkinTimeFormatted = formatDT(s?.checkIn || s?.checkinTime || s?.raw?.checkin_time);
   // 9. payment history with date & time
+  const resolveItemPaymentMode = (p: any) => {
+    const sCash = Number(p.split_cash || p.splitCash || 0);
+    const sCard = Number(p.split_card || p.splitCard || 0);
+    const sOnline = Number(p.split_online || p.splitOnline || 0);
+    const sCheque = Number(p.split_cheque || p.splitCheque || 0);
+    if (sOnline > 0 && sCash === 0 && sCard === 0 && sCheque === 0) return 'UPI';
+    if (sCard > 0 && sCash === 0 && sOnline === 0 && sCheque === 0) return 'CARD';
+    if (sCheque > 0 && sCash === 0 && sOnline === 0 && sCard === 0) return 'CHEQUE';
+    if (sCash > 0 && (sOnline > 0 || sCard > 0 || sCheque > 0)) return 'SPLIT';
+    if (p.utr_number || p.utr || (p.notes && /upi|online|gpay|phonepe/i.test(p.notes))) return 'UPI';
+    let raw = String(p.payment_mode || p.mode || '').trim();
+    if (raw && raw.toLowerCase() !== 'cash') return raw.toUpperCase();
+    if (s?.paymentMode && s.paymentMode.toLowerCase() !== 'cash') return s.paymentMode.toUpperCase();
+    if (sOnline > 0) return 'UPI';
+    if (sCard > 0) return 'CARD';
+    return (raw || 'CASH').toUpperCase();
+  };
+
   const paymentsList: any[] = Array.isArray(s?.payments) && s.payments.length > 0
     ? s.payments
     : (Array.isArray(s?.raw?.payments) && s.raw.payments.length > 0
@@ -1093,7 +1111,7 @@ export default function RoomDetails() {
             ) : (
               paymentsList.map((p: any, idx: number) => {
                 const pAmt = Number(p.amount || 0);
-                const pMode = String(p.mode || p.payment_mode || 'Cash').toUpperCase();
+                const pMode = resolveItemPaymentMode(p);
                 const pDate = formatDT(p.date || p.created_at || p.realized_at || s?.checkIn);
                 const pStaff = p.cashier || p.cashier_name || staffName || 'Staff';
                 const pReceipt = p.receiptNo || p.receipt_no || ('RCP-' + (p.id || idx + 1));
@@ -1458,7 +1476,7 @@ export default function RoomDetails() {
           ) : (
             paymentsList.map((p: any, idx: number) => {
               const pAmt = Number(p.amount || 0);
-              const pMode = String(p.payment_mode || p.mode || 'Cash').toUpperCase();
+              const pMode = resolveItemPaymentMode(p);
               const pDate = formatDT(p.created_at || p.realized_at || p.date || s?.checkIn);
               const pCashier = p.cashier_name || p.cashier || staffName || s.checkedInBy || 'Front Desk Staff';
               const pReceipt = p.receipt_no || p.receiptNo || ('RCP-' + (p.id || idx + 1));

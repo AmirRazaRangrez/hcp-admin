@@ -117,7 +117,24 @@ export const toStay = (b: any): Stay => {
     mealPlan: b.meal_plan ? String(b.meal_plan).replace(/_/g, ' ') : 'EP (Room Only)',
     voucherNumber: b.voucher_number || '',
     advanceReceiptNo: b.advance_receipt_no || '',
-    paymentMode: b.advance_payment_mode || b.final_payment_mode || 'Cash',
+    paymentMode: (() => {
+      const sCash = n(b.split_cash);
+      const sCard = n(b.split_card);
+      const sOnline = n(b.split_online);
+      const sCheque = n(b.split_cheque);
+      let m = String(b.advance_payment_mode || b.final_payment_mode || '').trim();
+      if (sOnline > 0 && sCash === 0 && sCard === 0 && sCheque === 0) return 'UPI';
+      if (sCard > 0 && sCash === 0 && sOnline === 0 && sCheque === 0) return 'Card';
+      if (sCheque > 0 && sCash === 0 && sOnline === 0 && sCard === 0) return 'Cheque';
+      if (sCash > 0 && (sOnline > 0 || sCard > 0 || sCheque > 0)) return 'Split';
+      if (!m || m.toLowerCase() === 'cash') {
+        if (sOnline > 0) return 'UPI';
+        if (sCard > 0) return 'Card';
+        if (sCheque > 0) return 'Cheque';
+        return 'Cash';
+      }
+      return m.toUpperCase() === 'UPI' ? 'UPI' : (m.toUpperCase() === 'CARD' ? 'Card' : m);
+    })(),
     splitCash: n(b.split_cash),
     splitCard: n(b.split_card),
     splitOnline: n(b.split_online),
