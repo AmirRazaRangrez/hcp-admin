@@ -31,6 +31,13 @@ export const SERVER_URL: string = detectServerUrl();
 
 // Fetch latest active HTTPS tunnel from Firebase cloud sync
 export const fetchCloudTunnelUrl = async (): Promise<string> => {
+  if (typeof window !== 'undefined' && window.location) {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') {
+      return 'http://localhost:3000';
+    }
+  }
+
   try {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timer = controller ? setTimeout(() => controller.abort(), 4000) : null;

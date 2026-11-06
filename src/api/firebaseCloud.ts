@@ -37,14 +37,40 @@ export function parseFirestoreDoc(doc: any): any {
   return out;
 }
 
-export async function fetchFirestoreCollection(coll: string): Promise<any[]> {
-  try {
-    const res = await fetch(`${FIREBASE_REST_URL}/${coll}?key=${FIREBASE_API_KEY}`).then(r => r.json()).catch(() => null);
-    if (res?.documents && Array.isArray(res.documents)) {
-      return res.documents.map(parseFirestoreDoc);
+const collCache = new Map<string, { time: number; data: any[] }>();
+const collInflight = new Map<string, Promise<any[]>>();
+
+export function invalidateFirestoreCache(coll?: string) {
+  if (coll) collCache.delete(coll);
+  else collCache.clear();
+}
+
+export async function fetchFirestoreCollection(coll: string, forceFresh = false): Promise<any[]> {
+  const now = Date.now();
+  if (!forceFresh) {
+    const cached = collCache.get(coll);
+    if (cached && (now - cached.time) < 90000) {
+      return cached.data;
     }
-  } catch (_) {}
-  return [];
+    const inflight = collInflight.get(coll);
+    if (inflight) return inflight;
+  }
+
+  const p = (async () => {
+    try {
+      const res = await fetch(`${FIREBASE_REST_URL}/${coll}?key=${FIREBASE_API_KEY}`).then(r => r.json()).catch(() => null);
+      if (res?.documents && Array.isArray(res.documents)) {
+        const parsed = res.documents.map(parseFirestoreDoc);
+        collCache.set(coll, { time: Date.now(), data: parsed });
+        return parsed;
+      }
+    } catch (_) {}
+    return collCache.get(coll)?.data || [];
+  })();
+
+  collInflight.set(coll, p);
+  p.finally(() => collInflight.delete(coll));
+  return p;
 }
 
 export async function fetchStoreBills(status: 'live' | 'history' | 'all' = 'all') {
@@ -66,15 +92,37 @@ export async function fetchStoreBills(status: 'live' | 'history' | 'all' = 'all'
 
     const bills = filteredBills.map((b: any) => {
       const v = vMap.get(String(b.vendor_id));
-      const billPayments = payments.filter((p: any) => String(p.bill_id) === String(b.id));
+      const billPayments = payments.filter((p: any) => 
+        String(p.bill_id) === String(b.id) || 
+        String(p.bill_id) === String(b.bill_number) ||
+        (String(p.vendor_id) === String(b.vendor_id) && Math.abs(Number(p.payment_amount) - Number(b.paid_amount)) < 1)
+      );
       const modeMatch = String(b.notes || '').match(/Mode:\s*([^,\n\|]+)/i);
       const parsedMode = (b.payment_mode && b.payment_mode !== 'null' ? b.payment_mode : '') || (modeMatch ? modeMatch[1].trim() : '') || (billPayments[0]?.payment_mode) || 'Bank Transfer';
+      const hasGst = Boolean(
+        b.has_gst === 1 || 
+        b.has_gst === true || 
+        b.has_gst === '1' || 
+        String(b.notes || '').toLowerCase().includes('with gst')
+      );
+      const finalPayments = billPayments.length > 0 ? billPayments : (Number(b.paid_amount || 0) > 0 ? [{
+        id: `synth_${b.id}`,
+        bill_id: b.id,
+        vendor_id: b.vendor_id,
+        payment_amount: Number(b.paid_amount),
+        payment_mode: parsedMode,
+        paid_by: b.created_by || 'Admin',
+        paid_at: b.updated_at || b.bill_date || b.created_at,
+        reference_no: ''
+      }] : []);
+
       return {
         ...b,
+        has_gst: hasGst,
         payment_mode: parsedMode,
-        vendor_name: v?.name || 'Store Vendor',
-        vendor_mobile: v?.mobile || '',
-        payments: billPayments
+        vendor_name: v?.name || b.vendor_name || 'Store Vendor',
+        vendor_mobile: v?.mobile || b.vendor_mobile || '',
+        payments: finalPayments
       };
     });
 
@@ -364,34 +412,53 @@ export async function actApproval(id: any, status: 'approved' | 'rejected') {
 }
 
 export async function fetchActivity(): Promise<any[]> {
-  const [occDocs, chargeDocs, storeDocs, payDocs] = await Promise.all([
+  const [occDocs, chargeDocs] = await Promise.all([
     fetchFirestoreCollection('active_occupancies'),
-    fetchFirestoreCollection('room_charges_inbox'),
-    fetchFirestoreCollection('store_bills'),
-    fetchFirestoreCollection('store_vendor_payments')
+    fetchFirestoreCollection('room_charges_inbox')
   ]);
 
   const fbOut: any[] = [];
 
+  // 1. Check-ins from active occupancies
   occDocs.forEach((o: any) => {
     const roomNum = cleanRoomNumber(o.room_number);
+    const adv = Number(o.advance_payment || 0);
+    const advText = adv > 0 ? ` · Advance: ₹${adv.toLocaleString('en-IN')}` : ' · Advance: ₹0';
+    const tariff = Number(o.total_room_charge || o.room_rate || 0);
+    const tariffText = tariff > 0 ? ` · Tariff: ₹${tariff.toLocaleString('en-IN')}` : '';
+    const src = o.booking_source ? ` · ${o.booking_source}` : '';
+    const by = o.checked_in_by ? ` · By ${o.checked_in_by}` : '';
+    const mob = o.guest_mobile ? ` · 📞 ${o.guest_mobile}` : '';
     fbOut.push({
       id: `in:${roomNum}`,
       type: 'checkin',
-      tags: ['checkin', 'stay', 'all'],
-      dept: 'Room',
-      billId: undefined,
+      tags: ['checkin', 'check-in', 'stay', 'all'],
+      dept: 'Front Desk',
+      billId: o.voucher_number || `REG-${roomNum}`,
       title: `Check-in · Room ${roomNum}`,
-      body: `${o.guest_name || 'Guest'} · ${o.room_type || 'Standard'}`,
+      body: `${o.guest_name || 'Guest'}${mob} · ${o.room_type || 'Standard Room'}${tariffText}${advText}${src}${by}`,
       created_at: o.checkin_time || o.updated_at || new Date().toISOString(),
       guest: o.guest_name,
       room: roomNum
     });
   });
 
+  // 2. Operational events from room_charges_inbox
+  const seenCheckoutKeys = new Set<string>();
   chargeDocs.forEach((c: any) => {
-    if (c.department === 'fb_live_state' || c.department === 'cloud_tunnel_url' || c.department === 'waiter_cloud_sync_pkg') return;
-    if (c.department === 'discount_approval') {
+    const dept = String(c.department || '').toLowerCase();
+    // Exclude internal state documents, live tunnel syncs, and whole stay folios
+    if (
+      dept === 'fb_live_state' ||
+      dept === 'cloud_tunnel_url' ||
+      dept === 'waiter_cloud_sync_pkg' ||
+      dept === 'room_folio'
+    ) {
+      return;
+    }
+
+    // 2a. Discount Approvals
+    if (dept === 'discount_approval') {
       let meta: any = {};
       try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
       const isApp = (c.status || '').toLowerCase() === 'approved';
@@ -414,58 +481,83 @@ export async function fetchActivity(): Promise<any[]> {
       return;
     }
 
-    const isCheckout = c.department === 'room_checkout' || c.department === 'room_checkout_history';
-    const deptLabel = isCheckout ? 'Front Desk' : c.department === 'bar' ? 'Bar POS' : 'Restaurant POS';
+    // 2b. Room Transfers
+    if (dept === 'room_transfer') {
+      let meta: any = {};
+      try { meta = JSON.parse(c.items_summary || '{}'); } catch {}
+      const fromRoom = cleanRoomNumber(c.from_room || meta.from_room || meta.from_room_number || '?');
+      const toRoom = cleanRoomNumber(c.to_room || meta.to_room || meta.to_room_number || c.room_number || '?');
+      fbOut.push({
+        id: String(c.id),
+        type: 'transfer',
+        tags: ['transfer', 'stay', 'all'],
+        dept: 'Front Desk',
+        billId: String(c.id),
+        title: `Room Transfer · Room ${fromRoom} ➔ Room ${toRoom}`,
+        body: `Shifted by ${c.settled_by || meta.staff || 'Staff'} · ${meta.reason || 'Room shift'}`,
+        created_at: c.created_at || new Date().toISOString(),
+        room: toRoom
+      });
+      return;
+    }
+
+    const isCheckout = dept === 'room_checkout' || dept === 'room_checkout_history';
     const roomNum = cleanRoomNumber(c.room_number);
     const totalAmt = Number(c.grand_total || c.subtotal || 0);
 
-    fbOut.push({
-      id: String(c.id),
-      type: isCheckout ? 'checkout' : 'charge',
-      tags: isCheckout ? ['checkout', 'stay', 'all'] : ['charge', 'all'],
-      dept: deptLabel,
-      billId: c.bill_no || String(c.id),
-      title: isCheckout ? `Checkout · Room ${roomNum}` : `${c.department === 'bar' ? 'Bar' : 'Restaurant'} Bill · ${roomNum ? `Room ${roomNum}` : (c.bill_no || 'Table')}`,
-      body: `₹${totalAmt.toLocaleString('en-IN')} · Settled by ${c.settled_by || 'Staff'}`,
-      created_at: c.created_at || new Date().toISOString(),
-      amount: totalAmt,
-      guest: c.settled_by,
-      room: roomNum
-    });
-  });
+    // 2c. Checkouts
+    if (isCheckout) {
+      let coMeta: any = {};
+      try { coMeta = JSON.parse(c.items_summary || '{}'); } catch {}
+      const dedupKey = String(coMeta.bookingId || c.bill_no || (c.room_number ? `room_${c.room_number}_${String(c.created_at).slice(0, 10)}` : c.id));
+      if (seenCheckoutKeys.has(dedupKey)) return;
+      seenCheckoutKeys.add(dedupKey);
 
-  storeDocs.forEach((b: any) => {
-    const totalAmt = Number(b.total_amount || 0);
-    const paidAmt = Number(b.paid_amount || 0);
-    const pendAmt = Number(b.pending_amount || 0);
-    const st = String(b.status || 'PENDING').toUpperCase();
-    const stLabel = st === 'FULL' ? 'PAID' : (st === 'PARTLY' ? 'PARTLY PAID' : 'PENDING');
-    fbOut.push({
-      id: `store_bill:${b.id}`,
-      type: 'store_bill',
-      tags: ['store', 'all'],
-      dept: 'Store Purchase',
-      billId: b.invoice_no || String(b.id),
-      title: `Store Bill · ${b.vendor_name || 'Vendor'}`,
-      body: `₹${totalAmt.toLocaleString('en-IN')} (${stLabel}: Paid ₹${paidAmt.toLocaleString('en-IN')}, Due ₹${pendAmt.toLocaleString('en-IN')}) · Invoice: ${b.invoice_no || b.bill_number || '-'}`,
-      created_at: b.created_at || new Date().toISOString(),
-      amount: totalAmt
-    });
-  });
+      const guest = coMeta.guestName || coMeta.guest_name || c.guest_name || 'Guest';
+      const staff = c.settled_by || coMeta.checkedOutBy || 'Staff';
+      const mob = coMeta.mobile ? ` · 📞 ${coMeta.mobile}` : '';
+      const rType = coMeta.roomType ? ` · ${coMeta.roomType}` : '';
+      const disc = Number(coMeta.discount || 0);
+      const discText = disc > 0 ? ` · Discount: ₹${disc.toLocaleString('en-IN')}` : '';
+      fbOut.push({
+        id: String(c.id),
+        type: 'checkout',
+        tags: ['checkout', 'check-out', 'stay', 'all'],
+        dept: 'Front Desk',
+        billId: c.bill_no || String(c.id),
+        title: `Check-out · Room ${roomNum}`,
+        body: `${guest}${mob}${rType} · Total: ₹${totalAmt.toLocaleString('en-IN')}${discText} · Settled: ₹${totalAmt.toLocaleString('en-IN')} · By ${staff}`,
+        created_at: c.created_at || new Date().toISOString(),
+        amount: totalAmt,
+        guest,
+        room: roomNum,
+        meta: { ...coMeta, bookingId: coMeta.bookingId }
+      });
+      return;
+    }
 
-  payDocs.forEach((p: any) => {
-    const amt = Number(p.payment_amount || 0);
-    fbOut.push({
-      id: `store_pay:${p.id}`,
-      type: 'store_payment',
-      tags: ['payments', 'store', 'all'],
-      dept: 'Store Payment',
-      billId: p.bill_id || String(p.id),
-      title: `Payment · ${p.vendor_name || 'Supplier'}`,
-      body: `₹${amt.toLocaleString('en-IN')} paid via ${p.payment_mode || 'Cash'} by ${p.paid_by || 'Admin'}`,
-      created_at: p.paid_at || p.created_at || new Date().toISOString(),
-      amount: amt
-    });
+    // 2d. Restaurant & Bar Orders Settled to Room (strictly declaring Paid vs Pending in Folio)
+    if (dept === 'restaurant' || dept === 'bar') {
+      // Exclude generic empty/zero background settlements
+      if (totalAmt <= 0) return;
+      const isPaid = (c.status || '').toLowerCase() === 'paid' || (c.status || '').toLowerCase() === 'settled';
+      const statusText = isPaid ? 'PAID' : 'PENDING IN ROOM FOLIO';
+      const deptName = dept === 'bar' ? 'Bar' : 'Restaurant';
+      const orderLabel = c.bill_no ? `Order #${c.bill_no}` : (c.order_id ? `Order #${c.order_id}` : 'F&B Bill');
+      fbOut.push({
+        id: String(c.id),
+        type: 'charge',
+        tags: ['charge', 'all'],
+        dept: `${deptName} POS`,
+        billId: c.bill_no || String(c.id),
+        title: `${deptName} Bill · Room ${roomNum} (${statusText})`,
+        body: `₹${totalAmt.toLocaleString('en-IN')} · ${orderLabel} · ${isPaid ? 'Settled directly by guest' : 'Billed to room folio (Pay at checkout)'}`,
+        created_at: c.created_at || new Date().toISOString(),
+        amount: totalAmt,
+        guest: c.settled_by,
+        room: roomNum
+      });
+    }
   });
 
   fbOut.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -847,10 +939,12 @@ export async function fetchStayDetails(id: any): Promise<any | null> {
     const grandTotal = Number(meta.grandTotal ?? (roomCharge + foodTotal + barTotal));
     const advancePaid = Number(meta.paid ?? meta.advancePaid ?? occ?.advance_payment ?? 0);
     const balanceDue = Number(meta.pending ?? Math.max(0, grandTotal - advancePaid));
+    const rawPayments = Array.isArray(meta.payments) && meta.payments.length > 0 ? meta.payments : (occ?.payments || []);
 
     return {
       room: {
         id: occ?.booking_id || occ?.room_id || cleanId,
+        booking_id: occ?.booking_id || occ?.room_id || cleanId,
         room_number: cleanNum,
         room_type: occ?.room_type || meta.roomType || 'Standard Room',
         guest_name: occ?.guest_name || meta.guestName || 'In-House Guest',
@@ -858,20 +952,37 @@ export async function fetchStayDetails(id: any): Promise<any | null> {
         email: meta.email || occ?.guest_email || '',
         aadhar_number: meta.aadharNumber || occ?.aadhar_number || '',
         doc_type: meta.docType || occ?.doc_type || 'Aadhaar Card',
-        address: meta.address || '',
-        dob: meta.dob || '',
+        address: meta.address || occ?.guest_address || '',
+        dob: meta.dob || occ?.guest_dob || '',
+        adults: meta.adults || occ?.adults || 1,
+        adults_male: meta.adultsMale || occ?.adults_male || 1,
+        adults_female: meta.adultsFemale || occ?.adults_female || 0,
+        children: meta.children || occ?.children || 0,
+        meal_plan: meta.mealPlan || occ?.meal_plan || 'without_breakfast',
         checkin_time: occ?.checkin_time || meta.checkinTime,
         approx_checkout_time: meta.approxCheckout || occ?.approx_checkout_time || '',
         total_room_charge: roomCharge,
+        room_rate: Number(meta.roomRate || meta.staffRoomRate || occ?.room_rate || occ?.custom_tariff || 0),
+        custom_tariff: Number(meta.customTariff || meta.roomRate || occ?.custom_tariff || 0),
         total_paid: advancePaid,
+        advance_payment: advancePaid,
         voucher_number: meta.voucherNumber || '',
         advance_receipt_no: meta.advanceReceiptNo || '',
-        advance_payment_mode: meta.paymentMode || 'Cash',
-        booking_source: meta.source || occ?.booking_source || 'Walk-in',
-        checked_in_by: meta.checkedInBy || 'Front Desk'
+        advance_payment_mode: meta.paymentMode || occ?.advance_payment_mode || 'Cash',
+        booking_source: meta.source || meta.bookingSource || occ?.booking_source || 'Walk-in',
+        ota_platform: meta.otaPlatform || meta.ota_platform || occ?.ota_platform || null,
+        otaPlatform: meta.otaPlatform || meta.ota_platform || occ?.ota_platform || null,
+        is_prepaid: meta.isPrepaid !== undefined ? meta.isPrepaid : (occ?.is_prepaid !== undefined ? occ.is_prepaid : 0),
+        isPrepaid: meta.isPrepaid !== undefined ? meta.isPrepaid : (occ?.is_prepaid !== undefined ? occ.is_prepaid : 0),
+        ota_bill_amount: Number(meta.otaBillAmount || meta.ota_bill_amount || occ?.ota_bill_amount || 0),
+        ota_booking_id: meta.otaBookingId || meta.ota_booking_id || occ?.ota_booking_id || '',
+        btc_company_name: meta.btcCompanyName || occ?.btc_company_name || null,
+        checked_in_by: meta.checkedInBy || occ?.checked_in_by || 'Front Desk',
+        payments: rawPayments
       },
       restaurantOrders,
       barOrders,
+      payments: rawPayments,
       summary: {
         roomCharge,
         foodTotal,
@@ -1027,4 +1138,124 @@ export async function fetchSingleOrderOrCharge(cleanId: string): Promise<any | n
 
 export async function sendTestPush(): Promise<{ success: boolean; error?: string }> {
   return { success: true };
+}
+
+export async function fetchStats(): Promise<any> {
+  try {
+    // 1. Try reading the real-time live_stats document synced by backend
+    try {
+      const liveRes = await fetch(`${FIREBASE_REST_URL}/system_settings/live_stats?key=${FIREBASE_API_KEY}`).then(r => r.json()).catch(() => null);
+      if (liveRes?.fields) {
+        const f = liveRes.fields;
+        const totRooms = Number(f.total_rooms?.integerValue || 40);
+        let occRooms = Number(f.occupied_rooms?.integerValue || 0);
+        if (occRooms === 0) {
+          const occCache = collCache.get('active_occupancies')?.data;
+          if (occCache && occCache.length > 0) {
+            occRooms = occCache.length;
+          }
+        }
+        const hospRev = Number(f.hospitality_revenue?.doubleValue || f.hospitality_revenue?.integerValue || 0);
+        const restRev = Number(f.restaurant_revenue?.doubleValue || f.restaurant_revenue?.integerValue || 0);
+        const barRev = Number(f.bar_revenue?.doubleValue || f.bar_revenue?.integerValue || 0);
+        const totRev = Number(f.today_revenue?.doubleValue || f.today_revenue?.integerValue || (hospRev + restRev + barRev));
+        const todayExp = Number(f.today_expenses?.doubleValue || f.today_expenses?.integerValue || 0);
+        const cinCount = Number(f.today_checkins?.integerValue || 0);
+        const coutCount = Number(f.today_checkouts?.integerValue || 0);
+        const discAmt = Number(f.today_discounts?.doubleValue || f.today_discounts?.integerValue || 0);
+        const btcPend = Number(f.btc_pending?.doubleValue || f.btc_pending?.integerValue || 0);
+
+        return {
+          rooms: {
+            total: totRooms,
+            occupied: occRooms,
+            ready: Math.max(0, totRooms - occRooms),
+            maintenance: 0
+          },
+          revenue: {
+            total: totRev,
+            hospitality: hospRev,
+            restaurant: restRev,
+            bar: barRev
+          },
+          todayExpenses: todayExp,
+          todayCheckins: cinCount,
+          todayCheckouts: coutCount,
+          todayDiscounts: discAmt,
+          btcPending: btcPend
+        };
+      }
+    } catch (_) {}
+
+    // 2. Fallback: Aggregate live from active_occupancies & room_charges_inbox
+    const [occDocs, chargeDocs] = await Promise.all([
+      fetchFirestoreCollection('active_occupancies'),
+      fetchFirestoreCollection('room_charges_inbox')
+    ]);
+
+    const totalRooms = 40;
+    const occupied = occDocs.length;
+    const ready = Math.max(0, totalRooms - occupied);
+
+    // Compute today's revenue from payments in active stays and checkouts
+    const todayStr = new Date().toISOString().split('T')[0];
+    let hospRev = 0;
+    let restRev = 0;
+    let barRev = 0;
+    let cinCount = 0;
+    let coutCount = 0;
+    let btcPend = 0;
+
+    occDocs.forEach((o: any) => {
+      const cin = String(o.checkin_time || '');
+      if (cin.startsWith(todayStr)) cinCount++;
+      const src = String(o.booking_source || '').toUpperCase();
+      if (src.includes('BTC') || o.btc_company_name) {
+        btcPend += Math.max(0, Number(o.total_room_charge || 0) - Number(o.total_paid || 0));
+      }
+      // Also sum payments in folio if active
+      if (Number(o.advance_payment || o.total_paid || 0) > 0 && cin.startsWith(todayStr)) {
+        hospRev += Number(o.advance_payment || o.total_paid || 0);
+      }
+    });
+
+    chargeDocs.forEach((c: any) => {
+      const dt = String(c.created_at || '');
+      const isToday = dt.startsWith(todayStr);
+      const dept = String(c.department || '').toLowerCase();
+      const grandTotal = Number(c.grand_total || c.subtotal || 0);
+
+      if (dept === 'room_checkout' || dept === 'room_checkout_history') {
+        if (isToday) {
+          coutCount++;
+          hospRev += grandTotal;
+        }
+      } else if (dept === 'restaurant' && isToday) {
+        restRev += grandTotal;
+      } else if (dept === 'bar' && isToday) {
+        barRev += grandTotal;
+      }
+    });
+
+    return {
+      rooms: { total: totalRooms, occupied, ready, maintenance: 0 },
+      revenue: {
+        total: hospRev + restRev + barRev,
+        hospitality: hospRev,
+        restaurant: restRev,
+        bar: barRev
+      },
+      todayExpenses: 0,
+      todayCheckins: cinCount,
+      todayCheckouts: coutCount,
+      todayDiscounts: 0,
+      btcPending: Math.max(0, btcPend)
+    };
+  } catch (err) {
+    console.warn('[FirebaseCloud fetchStats error]', err);
+    return {
+      rooms: { total: 40, occupied: 0, ready: 40, maintenance: 0 },
+      revenue: { total: 0, hospitality: 0, restaurant: 0, bar: 0 }
+    };
+  }
 }

@@ -26,12 +26,20 @@ const FILTERS = [
 ];
 
 const getEventTheme = (type?: string, title?: string) => {
-  const t = (type || title || '').toLowerCase();
-  if (t.includes('checkin') || t.includes('check-in')) return { Icon: BellIcon, color: '#10B981', label: 'CHECK-IN' };
-  if (t.includes('checkout') || t.includes('check-out')) return { Icon: CheckoutIcon, color: '#64748B', label: 'CHECK-OUT' };
-  if (t.includes('discount')) return { Icon: DiscountIcon, color: '#D97706', label: 'DISCOUNT' };
-  if (t.includes('payment') || t.includes('paid')) return { Icon: PaymentIcon, color: '#0D9488', label: 'PAYMENT' };
-  if (t.includes('food') || t.includes('restaurant') || t.includes('bar') || t.includes('fnb')) return { Icon: RestaurantIcon, color: '#E11D48', label: 'F&B ORDER' };
+  const combined = `${type || ''} ${title || ''}`.toLowerCase();
+  if (combined.includes('checkin') || combined.includes('check-in') || (combined.includes('stay') && !combined.includes('out'))) {
+    return { Icon: BellIcon, color: '#10B981', label: 'CHECK-IN' };
+  }
+  if (combined.includes('checkout') || combined.includes('check-out')) {
+    return { Icon: CheckoutIcon, color: '#475569', label: 'CHECK-OUT' };
+  }
+  if (combined.includes('discount')) return { Icon: DiscountIcon, color: '#D97706', label: 'DISCOUNT' };
+  if (combined.includes('payment') || combined.includes('paid')) return { Icon: PaymentIcon, color: '#0D9488', label: 'PAYMENT' };
+  if (combined.includes('food') || combined.includes('restaurant') || combined.includes('bar') || combined.includes('fnb')) {
+    return { Icon: RestaurantIcon, color: '#E11D48', label: 'F&B ORDER' };
+  }
+  if (combined.includes('store')) return { Icon: ReceiptIcon, color: '#8B5CF6', label: 'STORE' };
+  if (combined.includes('expense')) return { Icon: PaymentIcon, color: '#DC2626', label: 'EXPENSE' };
   return { Icon: ReceiptIcon, color: '#4F46E5', label: 'EVENT' };
 };
 
@@ -162,10 +170,30 @@ export default function Activity() {
       {todayOnly ? (
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FEF3C7', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, marginBottom: 12, borderWidth: 1, borderColor: '#FDE68A' }}>
           <Text style={{ fontSize: 12, fontWeight: '700', color: '#B45309' }}>
-            📅 Showing Today's {filter === 'checkin' ? 'Check-ins' : (filter === 'checkout' ? 'Check-outs' : 'Activity')} Only
+            📅 Showing Today's {filter === 'checkin' ? 'Check-ins' : (filter === 'checkout' ? 'Check-outs' : 'Activity')} Only ({items.length})
           </Text>
           <Pressable onPress={() => setTodayOnly(false)}>
-            <Text style={{ fontSize: 12, fontWeight: '800', color: '#0284C7' }}>Show All 7 Days →</Text>
+            <Text style={{ fontSize: 12, fontWeight: '800', color: '#0284C7' }}>Show All History →</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {/* If today has 0 items but historical items exist, provide an instant 1-tap view button */}
+      {todayOnly && items.length === 0 && rawItems.length > 0 && !busy ? (
+        <View style={{ backgroundColor: '#F8FAFC', padding: 14, borderRadius: 12, marginBottom: 14, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' }}>
+          <Text style={{ fontSize: 13, fontWeight: '700', color: '#334155', marginBottom: 4 }}>
+            No {filter === 'checkout' ? 'check-outs' : 'records'} logged yet today.
+          </Text>
+          <Text style={{ fontSize: 11.5, color: '#64748B', marginBottom: 10, textAlign: 'center' }}>
+            There are {rawItems.length} recent {filter === 'checkout' ? 'check-outs' : 'records'} from previous days.
+          </Text>
+          <Pressable
+            onPress={() => setTodayOnly(false)}
+            style={{ backgroundColor: '#0284C7', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8 }}
+          >
+            <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12.5 }}>
+              View Recent {filter === 'checkout' ? 'Check-outs' : 'Activity'} ({rawItems.length})
+            </Text>
           </Pressable>
         </View>
       ) : null}
@@ -290,13 +318,35 @@ export default function Activity() {
               </View>
 
               {a.body ? (
-                <Text style={styles.eventBody}>{formatActivityBody(a.body)}</Text>
+                (() => {
+                  const formatted = formatActivityBody(a.body);
+                  if (!formatted.includes('·') && !formatted.includes('•')) {
+                    return <Text style={styles.eventBody}>{formatted}</Text>;
+                  }
+                  const parts = formatted.split(/[·•]/).map(p => p.trim()).filter(Boolean);
+                  const primaryText = parts[0];
+                  const badges = parts.slice(1);
+                  return (
+                    <View style={styles.eventBodyWrap}>
+                      <Text style={styles.eventGuestName}>{primaryText}</Text>
+                      {badges.length > 0 ? (
+                        <View style={styles.eventMetaChipsRow}>
+                          {badges.map((badge, idx) => (
+                            <View key={idx} style={styles.metaChip}>
+                              <Text style={styles.metaChipText}>{badge}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })()
               ) : null}
 
               {clickable ? (
                 <View style={styles.cardFooter}>
                   <Text style={styles.viewBillPrompt}>
-                    {isCheckin || isStayFolio ? 'View room folio details ›' : isApproval ? 'View discount approval ›' : 'View settled bill details ›'}
+                    {isCheckout ? 'View check-out folio details ›' : (isCheckin || isStayFolio ? 'View room folio details ›' : isApproval ? 'View discount approval ›' : 'View settled bill details ›')}
                   </Text>
                 </View>
               ) : null}

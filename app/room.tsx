@@ -378,7 +378,7 @@ export default function RoomDetails() {
               restaurant: 0,
               bar: 0,
               extra: 0,
-              discount: 0
+              discount: Number(f.discount?.doubleValue || f.discount?.integerValue || meta.discount || 0)
             };
           }
         } catch (_) {}
@@ -431,7 +431,7 @@ export default function RoomDetails() {
                 restaurant: 0,
                 bar: 0,
                 extra: 0,
-                discount: 0
+                discount: Number(f.discount?.doubleValue || f.discount?.integerValue || meta.discount || 0)
               };
             }
           }
@@ -602,6 +602,19 @@ export default function RoomDetails() {
             pending,
             refundDue,
             source: fr.booking_source || found?.source || 'Walk-in',
+            booking_source: fr.booking_source || found?.source || 'Walk-in',
+            otaPlatform: fr.ota_platform || fr.otaPlatform || found?.otaPlatform || found?.ota_platform || '',
+            ota_platform: fr.ota_platform || fr.otaPlatform || found?.otaPlatform || found?.ota_platform || '',
+            isPrepaid: fr.is_prepaid !== undefined ? fr.is_prepaid : (found?.isPrepaid !== undefined ? found.isPrepaid : found?.is_prepaid),
+            is_prepaid: fr.is_prepaid !== undefined ? fr.is_prepaid : (found?.isPrepaid !== undefined ? found.isPrepaid : found?.is_prepaid),
+            otaBillAmount: Number(fr.ota_bill_amount || fr.otaBillAmount || found?.otaBillAmount || 0),
+            ota_bill_amount: Number(fr.ota_bill_amount || fr.otaBillAmount || found?.otaBillAmount || 0),
+            otaBookingId: fr.ota_booking_id || fr.otaBookingId || found?.otaBookingId || '',
+            ota_booking_id: fr.ota_booking_id || fr.otaBookingId || found?.otaBookingId || '',
+            staffRoomRate: Number(fr.room_rate || fr.custom_tariff || found?.customTariff || found?.room_rate || 0),
+            customTariff: Number(fr.room_rate || fr.custom_tariff || found?.customTariff || found?.room_rate || 0),
+            roomRate: Number(fr.room_rate || fr.custom_tariff || found?.customTariff || found?.room_rate || 0),
+            room_rate: Number(fr.room_rate || fr.custom_tariff || found?.customTariff || found?.room_rate || 0),
             checkedInBy: fr.checked_in_by || found?.checkedInBy || 'Front Desk',
             mealPlan: fr.meal_plan || found?.mealPlan || 'EP (Room Only)',
             voucherNumber: fr.voucher_number || found?.voucherNumber || '',
@@ -611,7 +624,7 @@ export default function RoomDetails() {
             folioBarOrders: folio.barOrders || [],
             folioOrders: mergedOrders,
             folioExtraExpenses: folio.extraExpenses || folio.expenses || fr.extraExpenses || fr.expenses || [],
-            payments: folio.payments || [],
+            payments: (Array.isArray(folio.payments) && folio.payments.length > 0) ? folio.payments : (Array.isArray(fr.payments) ? fr.payments : (found?.payments || [])),
             transferHistory: folio.transferHistory || fr.transferHistory || fr.transfer_history || (fr.extension_logs_json ? (() => { try { return JSON.parse(fr.extension_logs_json).filter((l: any) => l.type === 'room_transfer'); } catch (_) { return []; } })() : (found?.transferHistory || [])),
             raw: fr
           };
@@ -916,6 +929,9 @@ export default function RoomDetails() {
     if (sCheque > 0 && sCash === 0 && sOnline === 0 && sCard === 0) return 'CHEQUE';
     if (sCash > 0 && (sOnline > 0 || sCard > 0 || sCheque > 0)) return 'SPLIT';
     if (p.utr_number || p.utr || (p.notes && /upi|online|gpay|phonepe/i.test(p.notes))) return 'UPI';
+    if (p.card_digits || (p.notes && /pos|card|swipe/i.test(p.notes))) return 'CARD';
+    if (Number(p.card_surcharge || 0) > 0) return 'CARD';
+    if (Number(p.upi_tax || 0) > 0) return 'UPI';
     let raw = String(p.payment_mode || p.mode || '').trim();
     if (raw && raw.toLowerCase() !== 'cash') return raw.toUpperCase();
     if (s?.paymentMode && s.paymentMode.toLowerCase() !== 'cash') return s.paymentMode.toUpperCase();
@@ -1456,6 +1472,34 @@ export default function RoomDetails() {
             />
             <DetailRow label="Stay Duration" value={s.stayDuration || 'In-House'} />
             <DetailRow label="Booking Source" value={s.source || 'Walk-in'} bold />
+            {/* Dedicated OTA Breakdown if OTA Booking */}
+            {(String(s.source || s.booking_source || '').toUpperCase() === 'OTA' || Boolean(s.otaPlatform || s.ota_platform)) ? (
+              <>
+                <DetailRow
+                  label="OTA Booking Platform"
+                  value={s.otaPlatform || s.ota_platform || 'Online Travel Agency'}
+                  bold
+                  color="#0284C7"
+                />
+                {s.otaBookingId || s.ota_booking_id ? (
+                  <DetailRow label="OTA Booking / Voucher ID" value={s.otaBookingId || s.ota_booking_id} />
+                ) : null}
+                <DetailRow
+                  label="OTA Payment Type"
+                  value={(s.isPrepaid || s.is_prepaid) ? '🟢 PREPAID (OTA VOUCHER)' : '🟡 PAY AT HOTEL (COLLECT AT DESK)'}
+                  bold
+                  color={(s.isPrepaid || s.is_prepaid) ? '#059669' : '#D97706'}
+                />
+                {(s.customTariff || s.staffRoomRate || s.roomRate || s.room_rate) ? (
+                  <DetailRow
+                    label="Staff Custom Tariff"
+                    value={`₹${Number(s.customTariff || s.staffRoomRate || s.roomRate || s.room_rate).toLocaleString('en-IN')} / night (Custom staff entry)`}
+                    bold
+                    color="#4F46E5"
+                  />
+                ) : null}
+              </>
+            ) : null}
             <DetailRow label="Meal Plan" value={s.mealPlan} />
             <DetailRow label="Checked-in By" value={s.checkedInBy || 'Front Desk Staff'} />
             {s.voucherNumber ? <DetailRow label="Bill No" value={s.voucherNumber} bold /> : null}

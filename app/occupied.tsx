@@ -82,7 +82,7 @@ export default function Occupied() {
               🏨 {rooms.length} In-House Room{rooms.length > 1 ? 's' : ''}
             </Text>
             <Text style={styles.summaryMetaText}>
-              ✓ {fullyPaidCount} Cleared · ⚠️ {roomsWithPendingCount} With Due Balance
+              ✓ {fullyPaidCount} Cleared · ⚠️ {roomsWithPendingCount} Due
             </Text>
           </View>
         </View>
@@ -182,13 +182,16 @@ const styles = StyleSheet.create({
   },
   summaryBottomRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
-    alignItems: 'center'
+    alignItems: 'center',
+    gap: 6
   },
   summaryMetaText: {
-    fontSize: 11.5,
+    fontSize: 11,
     color: '#CBD5E1',
-    fontWeight: '600'
+    fontWeight: '600',
+    flexShrink: 1
   },
   grid: {
     flexDirection: 'row',

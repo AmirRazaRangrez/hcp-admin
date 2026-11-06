@@ -140,7 +140,7 @@ export function BillSheet({ visible, bill, onClose, onChanged }: { visible: bool
   if (!bill || !o) return null;
   const paid = !!o.is_paid, col = paid ? c.ok : RED;
   const rows = edit ? draft : itemsOf(o);
-  const sub = edit ? draft.reduce((t, i) => t + priceOf(i) * qtyOf(i), 0) : Number(o.subtotal) || rows.reduce((t, i) => t + priceOf(i) * qtyOf(i), 0);
+  const sub = edit ? draft.reduce((t: number, i: any) => t + priceOf(i) * qtyOf(i), 0) : Number(o.subtotal) || rows.reduce((t: number, i: any) => t + priceOf(i) * qtyOf(i), 0);
   const rate = Number(o.subtotal) > 0 ? Number(o.tax || 0) / Number(o.subtotal) : 0;
   const tax = edit ? Math.round(sub * rate) : Number(o.tax) || 0;
   const disc = Number(o.discount) || 0;

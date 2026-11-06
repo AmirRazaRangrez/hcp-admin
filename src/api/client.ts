@@ -258,12 +258,7 @@ const realApi={
      const res = await sget(ROUTES.stats);
      if (res?.data?.stats) return res.data.stats;
    } catch {}
-   const occ = await fetchSupabaseOccupied();
-   const totalRooms = 40;
-   return {
-     rooms: { total: totalRooms, occupied: occ.length, ready: Math.max(0, totalRooms - occ.length), maintenance: 0 },
-     revenue: { total: 0, hospitality: 0, restaurant: 0, bar: 0 }
-   };
+   return fb.fetchStats();
  },
  analytics: async (startDate: string, endDate: string) => { try { const res = await sget(ROUTES.analytics, { startDate, endDate }); if (res?.data) return res.data; } catch {} return fetchSupabaseDailyAnalytics(startDate, endDate); },
  async bills(p:any={}){

@@ -78,14 +78,19 @@ export default function Home() {
 
   const isToday = (x: any) => x && new Date(String(x).replace(' ', 'T')).toLocaleDateString('en-CA') === day();
   const evs: any[] = (data as any)?.ev || [];
-  const cin = data?.ev ? evs.filter(e => e.type === 'checkin' && isToday(e.created_at)).length : undefined;
-  const cout = data?.ev ? evs.filter(e => e.type === 'checkout' && isToday(e.created_at)).length : undefined;
-  const disc = data?.ev ? evs.filter(e => isToday(e.created_at)).reduce((t, e) => t + (Number(e.discount) || 0), 0) : undefined;
+  const cinCalculated = data?.ev ? evs.filter(e => e.type === 'checkin' && isToday(e.created_at)).length : undefined;
+  const coutCalculated = data?.ev ? evs.filter(e => e.type === 'checkout' && isToday(e.created_at)).length : undefined;
+  const discCalculated = data?.ev ? evs.filter(e => isToday(e.created_at)).reduce((t, e) => t + (Number(e.discount) || 0), 0) : undefined;
+
+  const cin = (data?.s?.todayCheckins !== undefined && Number(data.s.todayCheckins) > 0) ? Number(data.s.todayCheckins) : (cinCalculated ?? Number(data?.s?.todayCheckins || 0));
+  const cout = (data?.s?.todayCheckouts !== undefined && Number(data.s.todayCheckouts) > 0) ? Number(data.s.todayCheckouts) : (coutCalculated ?? Number(data?.s?.todayCheckouts || 0));
+  const disc = (data?.s?.todayDiscounts !== undefined && Number(data.s.todayDiscounts) > 0) ? Number(data.s.todayDiscounts) : (discCalculated ?? Number(data?.s?.todayDiscounts || 0));
 
   const rawExpenses: any[] = Array.isArray((data as any)?.exp) ? (data as any).exp : ((data as any)?.exp?.expenses || []);
-  const todayExpenses = rawExpenses
+  const calculatedExpenses = rawExpenses
     .filter(e => isToday(e.created_at))
     .reduce((sum, e) => sum + (Number(e.actual_used_amount || e.amount) || 0), 0);
+  const todayExpenses = calculatedExpenses > 0 ? calculatedExpenses : Number(data?.s?.todayExpenses || 0);
 
   // Compute BTC pending receivables
   const occList: any[] = (data as any)?.occ || [];
@@ -99,6 +104,9 @@ export default function Home() {
       btcPendingTotal += Math.max(0, tot - pd);
     }
   });
+  if (btcPendingTotal === 0 && Number(data?.s?.btcPending || 0) > 0) {
+    btcPendingTotal = Number(data?.s?.btcPending || 0);
+  }
   bList.forEach((b: any) => {
     const src = String(b.booking_source || b.source || b.customer_name || '').toUpperCase();
     const mode = String(b.payment_mode || '').toUpperCase();
@@ -150,7 +158,12 @@ export default function Home() {
   const r = data?.s?.rooms;
   const v = data?.s?.revenue;
   const a = data?.a;
-  const occ = r && r.total ? Math.round((r.occupied / r.total) * 100) + '%' : undefined;
+
+  // Real-time occupancy calculation: prioritize live occList if active stays exist
+  const occupiedCount = occList.length > 0 ? occList.length : Number(r?.occupied || 0);
+  const totalRooms = Number(r?.total || 40) || 40;
+  const availableCount = occList.length > 0 ? Math.max(0, totalRooms - occupiedCount) : Number(r?.ready ?? (totalRooms - occupiedCount));
+  const occupancyRate = totalRooms > 0 ? `${Math.round((occupiedCount / totalRooms) * 100)}%` : '0%';
 
   const hospRevenue = Number(v?.hospitality ?? 0);
   const netInflow = Math.max(0, hospRevenue - todayExpenses);
@@ -281,31 +294,31 @@ export default function Home() {
           l="Check-ins Today"
           v={cin}
           icon={<CheckinIcon size={14} color="#16A34A" />}
-          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkin', today: 'true' } })}
+          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkin', today: (cin && cin > 0) ? 'true' : 'false' } })}
         />
         <Tile
           l="Check-outs Today"
           v={cout}
           icon={<CheckoutIcon size={14} color="#EA580C" />}
-          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkout', today: 'true' } })}
+          go={() => nav.push({ pathname: '/(tabs)/activity', params: { filter: 'checkout', today: (cout && cout > 0) ? 'true' : 'false' } })}
         />
 
         {/* Row 5: Discounts Today & Occupancy Rate */}
         <Tile m l="Discounts Today" v={disc} icon={<DiscountIcon size={14} color="#D97706" />} />
-        <Tile l="Occupancy Rate" v={occ} icon={<OccupancyIcon size={14} color="#4F46E5" />} />
+        <Tile l="Occupancy Rate" v={occupancyRate} icon={<OccupancyIcon size={14} color="#4F46E5" />} />
 
         {/* Row 6: Occupied Rooms (links to /occupied) & Available Rooms */}
         <Tile
           go={() => nav.push('/occupied')}
           l="Occupied Rooms"
-          v={r?.occupied}
+          v={occupiedCount}
           highlight
           icon={<OccupiedRoomsIcon size={14} color="#B8893B" />}
         />
         <Tile
           go={() => nav.push('/available')}
           l="Available Rooms"
-          v={r?.ready}
+          v={availableCount}
           icon={<AvailableRoomsIcon size={14} color="#10B981" />}
         />
       </View>

@@ -186,8 +186,8 @@ export default function StoreScreen() {
     return formatIST(dateStr, { dateOnly: true, withYear: true, fallback: dateStr });
   };
 
-  // Helper to safely format bill numbers: Bill #29 -> Bill:29
-  const formatBillNo = (b: any) => {
+  // Helper to safely format bill numbers: Bill #29 -> Bill #29
+  const formatBillNo = (b: any, prefix = true) => {
     if (!b) return 'Bill';
     let raw = String(b.bill_number || '').trim();
     if (!raw || raw.toUpperCase() === 'N/A' || raw.toUpperCase() === '#N/A' || raw.toUpperCase() === 'NULL' || raw.toUpperCase() === 'UNDEFINED') {
@@ -195,7 +195,8 @@ export default function StoreScreen() {
     }
     // Remove any leading 'Bill', 'Bill #', 'Bill:', or '#'
     raw = raw.replace(/^bill\s*[:#]?\s*/i, '').replace(/^#+/, '').trim();
-    return `Bill:${raw}`;
+    if (!prefix) return raw;
+    return `Bill #${raw}`;
   };
 
   // Helper to resolve the exact payment mode selected by storeman (Cash, Cheque, Bank Transfer, UPI)
@@ -529,6 +530,14 @@ export default function StoreScreen() {
       .filter(p => {
         // Must have at least one bill matching the active filters
         return p.matchingBills.length > 0;
+      })
+      .sort((a, b) => {
+        const pendA = (a.matchingBills || a.bills || []).reduce((sum: number, bill: any) => sum + (Number(bill.pending_amount) || 0), 0);
+        const pendB = (b.matchingBills || b.bills || []).reduce((sum: number, bill: any) => sum + (Number(bill.pending_amount) || 0), 0);
+        if (pendA > 0 && pendB <= 0) return -1;
+        if (pendB > 0 && pendA <= 0) return 1;
+        if (pendA !== pendB) return pendB - pendA;
+        return (a.vendor_name || '').localeCompare(b.vendor_name || '');
       });
   }, [allParties, matchesFilter]);
 
@@ -916,7 +925,17 @@ export default function StoreScreen() {
 
             {filteredParties.map((p: any) => {
               const isExpanded = !!expandedParties[String(p.vendor_id)];
-              const partyBills = p.matchingBills || p.bills || [];
+              const rawBills = p.matchingBills || p.bills || [];
+              const partyBills = rawBills.slice().sort((a: any, b: any) => {
+                const dueA = Number(a.pending_amount) || 0;
+                const dueB = Number(b.pending_amount) || 0;
+                if (dueA > 0 && dueB <= 0) return -1;
+                if (dueB > 0 && dueA <= 0) return 1;
+                if (dueA !== dueB) return dueB - dueA; // highest dues first
+                const dateA = new Date(a.bill_date || a.created_at || 0).getTime();
+                const dateB = new Date(b.bill_date || b.created_at || 0).getTime();
+                return dateB - dateA; // newest date first
+              });
               const partyAging = getPartyAging(p, partyBills);
               const partyPending = partyBills.reduce((sum: number, b: any) => sum + (Number(b.pending_amount) || 0), 0);
 
@@ -957,68 +976,59 @@ export default function StoreScreen() {
                     </View>
                   </Pressable>
 
-                  {/* Expanded In-line Bills under this Party */}
+                  {/* Expanded In-line Bills under this Party (Modern 2-Row Clean Cards) */}
                   {isExpanded && (
                     <View style={st.partyExpandedBillsWrap}>
-                      <View style={st.billsTableHeader}>
-                        <Text style={[st.tableColHeader, { flex: 1.3 }]}>Date / Bill #</Text>
-                        <Text style={[st.tableColHeader, { flex: 0.9, textAlign: 'right' }]}>Total</Text>
-                        <Text style={[st.tableColHeader, { flex: 0.9, textAlign: 'right' }]}>Paid</Text>
-                        <Text style={[st.tableColHeader, { flex: 1.1, textAlign: 'right' }]}>Pending</Text>
-                      </View>
-
                       {partyBills.map((b: any) => {
                         const billAging = getBillAging(b);
+                        const isCleared = (Number(b.pending_amount) || 0) <= 0;
 
                         return (
                           <Pressable
                             key={b.id}
                             onPress={() => openBillModal(b)}
                             style={({ pressed }) => [
-                              st.partyBillRowItem,
+                              st.modernPartyBillCard,
                               { borderColor: billAging.borderColor, backgroundColor: billAging.bgColor },
-                              pressed && { opacity: 0.85 }
+                              pressed && { opacity: 0.85, transform: [{ scale: 0.99 }] }
                             ]}
                           >
-                            <View style={{ flex: 1.3 }}>
-                              <Text style={{ fontWeight: '800', color: c.ink, fontSize: 13 }}>
-                                {formatBillNo(b)}
-                              </Text>
-                              <Text style={{ color: c.mute, fontSize: 11, marginTop: 1 }}>
-                                {formatDateOnly(b.bill_date || b.created_at)}
-                              </Text>
-                              <View style={[st.rowStatusBadge, { backgroundColor: billAging.badgeBg, marginTop: 3 }]}>
-                                <Text style={[st.rowStatusBadgeText, { color: billAging.badgeColor }]}>
+                            {/* Row 1: Bill # & Status Chip */}
+                            <View style={st.modernBillRowTop}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 }}>
+                                <Text style={st.modernBillNumber} numberOfLines={1} ellipsizeMode="tail">
+                                  🧾 {formatBillNo(b)}
+                                </Text>
+                              </View>
+                              <View style={[st.modernStatusChip, { backgroundColor: billAging.badgeBg, borderColor: billAging.borderColor }]}>
+                                <Text style={[st.modernStatusChipText, { color: billAging.badgeColor }]}>
                                   {billAging.badgeText}
                                 </Text>
                               </View>
                             </View>
 
-                            <View style={{ flex: 0.9, alignItems: 'flex-end', justifyContent: 'center' }}>
-                              <Text style={{ fontSize: 12.5, fontWeight: '600', color: c.ink }}>
-                                {money(b.total_amount)}
+                            {/* Row 2: Date on left, Stat strip on right */}
+                            <View style={st.modernBillRowBottom}>
+                              <Text style={st.modernBillDate}>
+                                📅 {formatDateOnly(b.bill_date || b.created_at)}
                               </Text>
-                            </View>
 
-                            <View style={{ flex: 0.9, alignItems: 'flex-end', justifyContent: 'center' }}>
-                              <Text style={{ fontSize: 12.5, fontWeight: '600', color: '#047857' }}>
-                                {money(b.paid_amount || 0)}
-                              </Text>
-                            </View>
-
-                            <View style={{ flex: 1.1, alignItems: 'flex-end', justifyContent: 'center' }}>
-                              <Text style={{ fontSize: 13, fontWeight: '800', color: billAging.color }}>
-                                {money(b.pending_amount)}
-                              </Text>
-                              {Number(b.pending_amount) > 0 ? (
-                                <Text style={{ color: c.brass, fontSize: 11, fontWeight: '800', marginTop: 1 }}>
-                                  Pay ➔
-                                </Text>
-                              ) : (
-                                <Text style={{ color: '#059669', fontSize: 10, fontWeight: '800', marginTop: 1 }}>
-                                  ✓ Cleared
-                                </Text>
-                              )}
+                              <View style={st.modernStatsStrip}>
+                                <View style={st.modernStatBox}>
+                                  <Text style={st.modernStatLabel}>Total</Text>
+                                  <Text style={st.modernStatValTotal}>{money(b.total_amount)}</Text>
+                                </View>
+                                <View style={st.modernStatBox}>
+                                  <Text style={st.modernStatLabel}>Paid</Text>
+                                  <Text style={st.modernStatValPaid}>{money(b.paid_amount || 0)}</Text>
+                                </View>
+                                <View style={st.modernStatBox}>
+                                  <Text style={st.modernStatLabel}>{isCleared ? 'Status' : 'Pending'}</Text>
+                                  <Text style={[st.modernStatValDue, { color: billAging.color }]}>
+                                    {isCleared ? '✓ Cleared' : money(b.pending_amount)}
+                                  </Text>
+                                </View>
+                              </View>
                             </View>
                           </Pressable>
                         );
@@ -1486,109 +1496,185 @@ export default function StoreScreen() {
               </Pressable>
             </View>
 
-            <ScrollView contentContainerStyle={st.modalScrollContent}>
-              {/* BILL SUMMARY BOX */}
-              <View style={st.summaryBox}>
-                <View style={st.summaryRow}>
-                  <Text style={st.summaryLabel}>Vendor Name:</Text>
-                  <Text style={st.summaryVal}>{selectedBill?.vendor_name}</Text>
-                </View>
-                {selectedBill?.vendor_mobile ? (
-                  <View style={st.summaryRow}>
-                    <Text style={st.summaryLabel}>Vendor Contact:</Text>
-                    <Pressable onPress={() => Linking.openURL(`tel:${selectedBill?.vendor_mobile}`)}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                        <PhoneIcon size={13} color={c.brass} />
-                        <Text style={[st.summaryVal, { color: c.brass, fontWeight: '700' }]}>
-                          {selectedBill?.vendor_mobile}
+            {(() => {
+              const totalAmt = Number(selectedBill?.total_amount) || 0;
+              const paidAmt = Number(selectedBill?.paid_amount) || 0;
+              const dueAmt = Number(selectedBill?.pending_amount) || 0;
+              const paidPct = totalAmt > 0 ? Math.min(100, Math.round((paidAmt / totalAmt) * 100)) : (dueAmt <= 0 ? 100 : 0);
+              const duePct = Math.max(0, 100 - paidPct);
+              const isGst = !!(
+                selectedBill?.has_gst === 1 ||
+                selectedBill?.has_gst === true ||
+                selectedBill?.has_gst === '1' ||
+                (typeof selectedBill?.notes === 'string' && selectedBill.notes.toLowerCase().includes('with gst'))
+              );
+              const isCleared = dueAmt <= 0;
+              const paymentsList = (selectedBill?.payments && selectedBill.payments.length > 0)
+                ? selectedBill.payments
+                : (paidAmt > 0 ? [{
+                    id: `pay_synth_${selectedBill?.id}`,
+                    payment_amount: paidAmt,
+                    payment_mode: getBillPaymentMode(selectedBill),
+                    paid_at: selectedBill?.settled_at || selectedBill?.updated_at || selectedBill?.bill_date || selectedBill?.created_at,
+                    paid_by: selectedBill?.paid_by || selectedBill?.created_by || 'Store Manager',
+                    reference_no: selectedBill?.reference_no || selectedBill?.utr_number || '',
+                  }] : []);
+
+              return (
+                <ScrollView contentContainerStyle={st.modalScrollContent}>
+                  {/* STOREMAN-STYLE PROGRESS BAR */}
+                  <View style={st.storemanProgressWrap}>
+                    <View style={st.storemanProgressTextRow}>
+                      <Text style={st.storemanProgressPaidText}>Paid: {money(paidAmt)} ({paidPct}%)</Text>
+                      <Text style={st.storemanProgressDueText}>Due: {money(dueAmt)} ({duePct}%)</Text>
+                    </View>
+                    <View style={st.storemanProgressBarTrack}>
+                      <View style={[st.storemanProgressBarFill, { width: `${paidPct}%` }]} />
+                    </View>
+                  </View>
+
+                  {/* BILL INFORMATION SECTION */}
+                  <View style={st.storemanSectionHeaderRow}>
+                    <Text style={st.storemanSectionHeaderTitle}>📄 BILL INFORMATION</Text>
+                  </View>
+                  <View style={st.summaryBox}>
+                    <View style={st.summaryRow}>
+                      <Text style={st.summaryLabel}>Status:</Text>
+                      <View style={[st.modernStatusChip, {
+                        backgroundColor: isCleared ? '#DCFCE7' : (paidAmt > 0 ? '#FEF3C7' : '#FEE2E2'),
+                        borderColor: isCleared ? '#86EFAC' : (paidAmt > 0 ? '#FDE68A' : '#FCA5A5')
+                      }]}>
+                        <Text style={[st.modernStatusChipText, {
+                          color: isCleared ? '#15803D' : (paidAmt > 0 ? '#B45309' : '#B91C1C')
+                        }]}>
+                          {isCleared ? 'Fully Paid' : (paidAmt > 0 ? 'Partly Paid' : 'Pending')}
                         </Text>
                       </View>
-                    </Pressable>
-                  </View>
-                ) : null}
-                <View style={st.summaryRow}>
-                  <Text style={st.summaryLabel}>Bill Date:</Text>
-                  <Text style={st.summaryVal}>{formatDateOnly(selectedBill?.bill_date || selectedBill?.created_at)}</Text>
-                </View>
-                <View style={st.summaryRow}>
-                  <Text style={st.summaryLabel}>GST Status:</Text>
-                  <Text style={st.summaryVal}>
-                    {selectedBill?.has_gst ? 'With GST (Default)' : 'Without GST'}
-                  </Text>
-                </View>
-                <View style={st.summaryRow}>
-                  <Text style={st.summaryLabel}>Preferred Mode:</Text>
-                  <Text style={st.summaryVal}>{getBillPaymentMode(selectedBill)}</Text>
-                </View>
-                {selectedBill?.notes ? (
-                  <View style={st.summaryRow}>
-                    <Text style={st.summaryLabel}>Notes:</Text>
-                    <Text style={[st.summaryVal, { fontStyle: 'italic' }]}>{selectedBill.notes}</Text>
-                  </View>
-                ) : null}
-
-                <View style={st.summaryDivider} />
-
-                {/* Amounts Breakdown */}
-                <View style={st.summaryRow}>
-                  <Text style={st.summaryLabel}>Total Bill Amount:</Text>
-                  <Text style={[st.summaryVal, { fontWeight: '700', color: c.ink, fontSize: 16 }]}>
-                    {money(selectedBill?.total_amount)}
-                  </Text>
-                </View>
-                <View style={st.summaryRow}>
-                  <Text style={st.summaryLabel}>Already Paid:</Text>
-                  <Text style={[st.summaryVal, { fontWeight: '700', color: '#047857', fontSize: 16 }]}>
-                    {money(selectedBill?.paid_amount || 0)}
-                  </Text>
-                </View>
-                <View style={st.summaryRow}>
-                  <Text style={[st.summaryLabel, { fontWeight: '700', color: c.bad }]}>
-                    Remaining Due:
-                  </Text>
-                  <Text style={[st.summaryVal, { fontWeight: '800', color: c.bad, fontSize: 18 }]}>
-                    {money(selectedBill?.pending_amount)}
-                  </Text>
-                </View>
-              </View>
-
-              {/* PAYMENT HISTORY: With Date - Time, Mode, Amount */}
-              {selectedBill?.payments && selectedBill.payments.length > 0 && (
-                <View style={st.historySectionBox}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-                    <Text style={st.secTitle}>Payment Installment History ({selectedBill.payments.length}):</Text>
-                  </View>
-                  {selectedBill.payments.map((p: any, idx: number) => (
-                    <View key={p.id || idx} style={st.pastPaymentItem}>
-                      <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                          <Text style={{ fontWeight: '800', color: '#047857', fontSize: 14 }}>
-                            {money(p.payment_amount)}
-                          </Text>
-                          <Text style={{ color: c.ink, fontSize: 12, fontWeight: '700' }}>
-                            {p.payment_mode || 'Bank Transfer'}
-                          </Text>
-                        </View>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 3 }}>
-                          <Text style={{ color: c.mute, fontSize: 11 }}>
-                            📅 {formatDateTime(p.paid_at || p.created_at)}
-                          </Text>
-                          {p.paid_by && (
-                            <Text style={{ color: c.mute, fontSize: 11 }}>
-                              👤 {p.paid_by}
-                            </Text>
-                          )}
-                        </View>
-                        {p.reference_no ? (
-                          <Text style={{ color: c.brass, fontSize: 11, marginTop: 2, fontWeight: '600' }}>
-                            Ref: {p.reference_no}
-                          </Text>
-                        ) : null}
-                      </View>
                     </View>
-                  ))}
-                </View>
-              )}
+
+                    <View style={st.summaryRow}>
+                      <Text style={st.summaryLabel}>Vendor Name:</Text>
+                      <Text style={[st.summaryVal, { fontWeight: '700' }]}>{selectedBill?.vendor_name}</Text>
+                    </View>
+
+                    {selectedBill?.vendor_mobile ? (
+                      <View style={st.summaryRow}>
+                        <Text style={st.summaryLabel}>Vendor Mobile:</Text>
+                        <Pressable onPress={() => Linking.openURL(`tel:${selectedBill?.vendor_mobile}`)}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <PhoneIcon size={13} color={c.brass} />
+                            <Text style={[st.summaryVal, { color: c.brass, fontWeight: '700' }]}>
+                              {selectedBill?.vendor_mobile}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      </View>
+                    ) : null}
+
+                    <View style={st.summaryRow}>
+                      <Text style={st.summaryLabel}>Bill Number:</Text>
+                      <Text style={[st.summaryVal, { fontWeight: '700' }]}>{formatBillNo(selectedBill)}</Text>
+                    </View>
+
+                    <View style={st.summaryRow}>
+                      <Text style={st.summaryLabel}>Bill Date:</Text>
+                      <Text style={st.summaryVal}>{formatDateOnly(selectedBill?.bill_date || selectedBill?.created_at)}</Text>
+                    </View>
+
+                    <View style={st.summaryDivider} />
+
+                    <View style={st.summaryRow}>
+                      <Text style={st.summaryLabel}>Total Amount:</Text>
+                      <Text style={[st.summaryVal, { fontWeight: '700', color: c.ink, fontSize: 16 }]}>
+                        {money(totalAmt)}
+                      </Text>
+                    </View>
+
+                    <View style={st.summaryRow}>
+                      <Text style={st.summaryLabel}>Paid Amount:</Text>
+                      <Text style={[st.summaryVal, { fontWeight: '700', color: '#047857', fontSize: 16 }]}>
+                        {money(paidAmt)}
+                      </Text>
+                    </View>
+
+                    <View style={st.summaryRow}>
+                      <Text style={[st.summaryLabel, { fontWeight: '700', color: c.bad }]}>
+                        Remaining Due:
+                      </Text>
+                      <Text style={[st.summaryVal, { fontWeight: '800', color: c.bad, fontSize: 18 }]}>
+                        {money(dueAmt)}
+                      </Text>
+                    </View>
+
+                    <View style={st.summaryDivider} />
+
+                    <View style={st.summaryRow}>
+                      <Text style={st.summaryLabel}>GST Option:</Text>
+                      <Text style={[st.summaryVal, { fontWeight: '700', color: isGst ? '#059669' : c.mute }]}>
+                        {isGst ? 'With GST' : 'Without GST'}
+                      </Text>
+                    </View>
+
+                    <View style={st.summaryRow}>
+                      <Text style={st.summaryLabel}>Payment Mode:</Text>
+                      <Text style={st.summaryVal}>{getBillPaymentMode(selectedBill)}</Text>
+                    </View>
+
+                    {selectedBill?.id ? (
+                      <View style={st.summaryRow}>
+                        <Text style={st.summaryLabel}>Bill ID:</Text>
+                        <Text style={[st.summaryVal, { color: c.mute, fontSize: 12 }]}>
+                          {selectedBill?.bill_id || selectedBill?.id}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+
+                  {/* 📋 PAYMENT RECORD SECTION (STOREMAN STYLE) */}
+                  <View style={st.storemanSectionHeaderRow}>
+                    <Text style={st.storemanSectionHeaderTitle}>📋 PAYMENT RECORD</Text>
+                  </View>
+
+                  {paymentsList.length > 0 ? (
+                    paymentsList.map((p: any, idx: number) => {
+                      const isFullSettlement = idx === paymentsList.length - 1 && isCleared;
+                      return (
+                        <View key={p.id || idx} style={st.storemanPaymentRecordCard}>
+                          <View style={st.storemanPayRecordHeader}>
+                            <Text style={st.storemanPayRecordTitle}>
+                              {isFullSettlement ? 'Full Payment Cleared' : `Payment Installment #${idx + 1}`}
+                            </Text>
+                            <Text style={st.storemanPayRecordAmount}>
+                              {money(p.payment_amount)}
+                            </Text>
+                          </View>
+                          <View style={st.storemanPayRecordDivider} />
+                          <View style={st.storemanPayRecordFooter}>
+                            <Text style={st.storemanPayRecordMode}>
+                              Mode: <Text style={{ fontWeight: '700', color: c.ink }}>{p.payment_mode || 'Bank Transfer'}</Text>
+                            </Text>
+                            <Text style={st.storemanPayRecordDate}>
+                              📅 {formatDateTime(p.paid_at || p.created_at)}
+                            </Text>
+                          </View>
+                          {p.reference_no ? (
+                            <Text style={st.storemanPayRecordRef}>
+                              Ref: {p.reference_no}
+                            </Text>
+                          ) : null}
+                          {p.paid_by ? (
+                            <Text style={st.storemanPayRecordPayer}>
+                              By: {p.paid_by}
+                            </Text>
+                          ) : null}
+                        </View>
+                      );
+                    })
+                  ) : (
+                    <View style={st.storemanEmptyPaymentBox}>
+                      <Text style={st.storemanEmptyPaymentText}>No payment installments recorded yet.</Text>
+                    </View>
+                  )}
 
               {/* INTERACTIVE PAY FORM (IF PENDING AMOUNT > 0) */}
               {Number(selectedBill?.pending_amount) > 0 ? (
@@ -1715,7 +1801,14 @@ export default function StoreScreen() {
                   </Text>
                 </View>
               )}
+
+              {/* Storeman-style Bottom Close Button */}
+              <Pressable onPress={() => setSelectedBill(null)} style={st.storemanModalCloseBtn}>
+                <Text style={st.storemanModalCloseBtnText}>Close</Text>
+              </Pressable>
             </ScrollView>
+          );
+        })()}
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -2323,6 +2416,216 @@ const st = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 13
+  },
+
+  // Modern Clean Party Bill Card (Eliminates table column wrapping)
+  modernPartyBillCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    borderWidth: 1.2,
+    borderColor: '#E2E8F0',
+    padding: 10,
+    marginBottom: 6,
+    gap: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 2,
+    elevation: 1
+  },
+  modernBillRowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  modernBillNumber: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: c.ink
+  },
+  modernStatusChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1
+  },
+  modernStatusChipText: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    letterSpacing: 0.3
+  },
+  modernBillRowBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 5,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.04)'
+  },
+  modernBillDate: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: c.mute
+  },
+  modernStatsStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10
+  },
+  modernStatBox: {
+    alignItems: 'flex-end'
+  },
+  modernStatLabel: {
+    fontSize: 9.5,
+    color: c.mute,
+    textTransform: 'uppercase',
+    fontWeight: '700'
+  },
+  modernStatValTotal: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: c.ink
+  },
+  modernStatValPaid: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#059669'
+  },
+  modernStatValDue: {
+    fontSize: 12.5,
+    fontWeight: '800'
+  },
+
+  // Storeman-Style Bill Modal Additions
+  storemanProgressWrap: {
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 10
+  },
+  storemanProgressTextRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 6
+  },
+  storemanProgressPaidText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#15803D'
+  },
+  storemanProgressDueText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#B91C1C'
+  },
+  storemanProgressBarTrack: {
+    height: 6,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 3,
+    overflow: 'hidden'
+  },
+  storemanProgressBarFill: {
+    height: '100%',
+    backgroundColor: '#10B981',
+    borderRadius: 3
+  },
+  storemanSectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    marginBottom: 6,
+    gap: 6
+  },
+  storemanSectionHeaderTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: c.ink,
+    letterSpacing: 0.5
+  },
+  storemanPaymentRecordCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 12,
+    marginBottom: 8
+  },
+  storemanPayRecordHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6
+  },
+  storemanPayRecordTitle: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: c.ink
+  },
+  storemanPayRecordAmount: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#059669'
+  },
+  storemanPayRecordDivider: {
+    height: 1,
+    backgroundColor: '#E2E8F0',
+    marginBottom: 6
+  },
+  storemanPayRecordFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  storemanPayRecordMode: {
+    fontSize: 11.5,
+    color: c.mute
+  },
+  storemanPayRecordDate: {
+    fontSize: 11.5,
+    color: c.mute,
+    fontWeight: '600'
+  },
+  storemanPayRecordRef: {
+    fontSize: 11,
+    color: c.brass,
+    fontWeight: '700',
+    marginTop: 4
+  },
+  storemanPayRecordPayer: {
+    fontSize: 11,
+    color: c.mute,
+    marginTop: 2
+  },
+  storemanEmptyPaymentBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 14,
+    alignItems: 'center',
+    marginBottom: 8
+  },
+  storemanEmptyPaymentText: {
+    fontSize: 12,
+    color: c.mute,
+    fontStyle: 'italic'
+  },
+  storemanModalCloseBtn: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#CBD5E1'
+  },
+  storemanModalCloseBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: c.ink
   },
 
   // Bill Row Card (Bill-wise View)

@@ -1,5 +1,6 @@
 import { AppState, AppStateStatus } from 'react-native';
 import { SERVER_URL, fetchCloudTunnelUrl } from '../config';
+import { invalidateFirestoreCache } from './firebaseCloud';
 
 const FIREBASE_REST_URL = 'https://firestore.googleapis.com/v1/projects/hotelcitypark-crm/databases/(default)/documents';
 const FIREBASE_API_KEY = 'AIzaSyCtZnkdk1_q8rWrISnD8P2Rhi-jcPn1QTI';
@@ -92,14 +93,21 @@ function initWebSocket() {
 
         const ev = msg.event;
         if (ev === 'ROOMS_UPDATED') {
+          invalidateFirestoreCache('active_occupancies');
           dispatchEvent('active_occupancies', { eventType: 'UPDATE' });
         } else if (ev === 'FOLIO_UPDATED') {
+          invalidateFirestoreCache('active_occupancies');
+          invalidateFirestoreCache('room_charges_inbox');
           dispatchEvent('active_occupancies', { eventType: 'UPDATE' });
           dispatchEvent('room_charges_inbox', { eventType: 'UPDATE' });
         } else if (ev === 'STORE_UPDATED') {
+          invalidateFirestoreCache('store_bills');
+          invalidateFirestoreCache('store_vendor_payments');
           dispatchEvent('store_bills', { eventType: 'UPDATE' });
           dispatchEvent('store_vendor_payments', { eventType: 'UPDATE' });
         } else if (ev === 'GUEST_ORDERS_UPDATED' || ev === 'TABLES_UPDATED' || ev === 'BAR_UPDATED' || ev === 'EXPENSES_UPDATED' || ev === 'NOTIFICATION' || ev === 'APPROVAL_REQUEST') {
+          invalidateFirestoreCache('active_occupancies');
+          invalidateFirestoreCache('room_charges_inbox');
           dispatchEvent('active_occupancies', { eventType: 'UPDATE' });
           dispatchEvent('room_charges_inbox', { eventType: 'UPDATE' });
         }

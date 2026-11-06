@@ -819,76 +819,6 @@ export default function AnalyticsTab() {
       )}
 
       {/* ========================================================= */}
-      {/* SECTION 4: SETTLED BILLS & INVOICES LIST                  */}
-      {/* ========================================================= */}
-      <View style={{ marginTop: 8 }}>
-        <View style={styles.billsHeaderRow}>
-          <Text style={styles.billsHeaderTitle}>
-            Settled Bills & Invoices ({filteredBills.length})
-          </Text>
-          <Text style={styles.billsHeaderSub}>
-            {sortOrder === 'new' ? 'Newest first' : 'Oldest first'}
-            {(fromBillNo || toBillNo) ? ` · #${fromBillNo || '1'}–#${toBillNo || '...'}` : ''}
-          </Text>
-        </View>
-
-        {filteredBills.length === 0 ? (
-          <Card style={{ alignItems: 'center', paddingVertical: 18 }}>
-            <Text style={{ color: c.mute, fontSize: 13 }}>
-              No settled bills found matching the selected filter criteria.
-            </Text>
-          </Card>
-        ) : (
-          <>
-            {visibleBills.map((b: any, idx: number) => {
-              const deptColor = b.dept === 'Room' ? '#2563EB' : b.dept === 'Bar' ? '#7C3AED' : '#E11D48';
-              return (
-                <Pressable
-                  key={`${b.dept}:${b.id || idx}`}
-                  onPress={() => router.push({ pathname: '/bill', params: { dept: b.dept, id: String(b.id) } })}
-                >
-                  <Card style={styles.billItemCard}>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <View style={{ flex: 1, marginRight: 8 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Text style={styles.billNumber}>{b.order_number || `#${b.id}`}</Text>
-                          <Badge text={b.dept} color={deptColor} />
-                        </View>
-                        <Text style={styles.billCustomer}>
-                          {b.customer_name || 'Walk-in'} {b.room_number ? `· Room ${b.room_number}` : ''}
-                        </Text>
-                      </View>
-                      <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={styles.billAmount}>{money(b.total)}</Text>
-                        <Badge text={b.payment_mode || 'Settled'} color={c.ok} />
-                      </View>
-                    </View>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-                      <Text style={{ color: c.mute, fontSize: 11 }}>{when(b.created_at)}</Text>
-                      <Text style={{ color: c.brass, fontSize: 12, fontWeight: '700' }}>Details ➔</Text>
-                    </View>
-                  </Card>
-                </Pressable>
-              );
-            })}
-            {filteredBills.length > displayLimit && (
-              <Pressable
-                onPress={() => setDisplayLimit(p => p + 30)}
-                style={({ pressed }) => [
-                  styles.loadMoreBtn,
-                  pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }
-                ]}
-              >
-                <Text style={styles.loadMoreBtnText}>
-                  Show More ({filteredBills.length - displayLimit} more bills) ▾
-                </Text>
-              </Pressable>
-            )}
-          </>
-        )}
-      </View>
-
-      {/* ========================================================= */}
       {/* FILTER MODAL: Shortcuts, Date Range, Bill No, Sort Order */}
       {/* ========================================================= */}
       {filterModal && (
@@ -907,8 +837,8 @@ export default function AnalyticsTab() {
             {/* Header */}
             <View style={styles.modalHeader}>
               <View>
-                <Text style={styles.modalTitle}>Filter Analytics & Bills</Text>
-                <Text style={styles.modalSubtitle}>Shortcuts, date range, invoice numbers & sorting</Text>
+                <Text style={styles.modalTitle}>Filter Analytics</Text>
+                <Text style={styles.modalSubtitle}>Shortcuts, financial periods & date range</Text>
               </View>
               <Pressable onPress={closeFilterModal} style={styles.modalCloseBtn} hitSlop={10}>
                 <CloseIcon size={18} color={c.mute} />
