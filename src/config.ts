@@ -1,4 +1,4 @@
-export const CLOUD_TUNNEL_URL: string = 'https://creating-oxide-trailers-champions.trycloudflare.com';
+export const CLOUD_TUNNEL_URL: string = 'https://guaranteed-connecting-floppy-bryant.trycloudflare.com';
 
 const FIREBASE_TUNNEL_ENDPOINT = 'https://firestore.googleapis.com/v1/projects/hotelcitypark-crm/databases/(default)/documents/room_charges_inbox/cloud_tunnel_url?key=AIzaSyCtZnkdk1_q8rWrISnD8P2Rhi-jcPn1QTI';
 
