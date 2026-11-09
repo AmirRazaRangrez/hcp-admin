@@ -568,8 +568,15 @@ editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.
     // Fallback to Cloud (works everywhere: 5G, 4G, remote)
     try {
       const cloud: any = await fetchSupabaseApprovals();
-      if (cloud?.pending?.length > 0 || cloud?.history?.length > 0) {
-        return cloud;
+      if (cloud && (Array.isArray(cloud.pending) || Array.isArray(cloud.history))) {
+        if ((cloud.pending && cloud.pending.length > 0) || (cloud.history && cloud.history.length > 0)) {
+          return cloud;
+        }
+      } else if (Array.isArray(cloud) && cloud.length > 0) {
+        return {
+          pending: cloud.filter((x: any) => (x.status || 'PENDING').toUpperCase() === 'PENDING'),
+          history: cloud.filter((x: any) => (x.status || 'PENDING').toUpperCase() !== 'PENDING')
+        };
       }
     } catch {}
 

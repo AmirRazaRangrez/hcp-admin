@@ -28,7 +28,7 @@ export default function Approvals() {
   const [popupItem, setPopupItem] = useState<any>(null);
   const [actingModal, setActingModal] = useState(false);
 
-  const { data, err, busy, isRefreshing, at, reload } = useLoad(() => api.approvals(), [], 'approvals');
+  const { data, err, busy, isRefreshing, at, reload } = useLoad(() => api.approvals(), [], 'approvals', 3000);
 
   // Support both new { pending, history } and legacy flat array
   const pendingList: any[] = Array.isArray(data)

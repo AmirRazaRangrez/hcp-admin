@@ -392,9 +392,63 @@ export async function fetchDailyAnalytics(startDate: string, endDate: string) {
   });
 }
 
-export async function fetchApprovals() {
+export async function fetchApprovals(): Promise<{ pending: any[]; history: any[] }> {
   const charges = await fetchFirestoreCollection('room_charges_inbox');
-  return charges.filter((c: any) => c.department === 'discount_approval');
+  const approvalDocs = charges.filter((c: any) => c.department === 'discount_approval');
+
+  const pending: any[] = [];
+  const history: any[] = [];
+
+  for (const c of approvalDocs) {
+    let meta: any = {};
+    try {
+      meta = typeof c.items_summary === 'string' ? JSON.parse(c.items_summary || '{}') : (c.items_summary || {});
+    } catch (_) {}
+
+    const rawId = String(c.id || '').replace(/^APP-/, '');
+    const numId = !isNaN(Number(rawId)) && Number(rawId) > 0 ? Number(rawId) : c.id;
+
+    const roomNum = String(c.room_number || meta.room_number || '0');
+    const st = String(c.status || meta.status || 'PENDING').toUpperCase();
+
+    const item: any = {
+      id: numId,
+      cloud_id: c.id,
+      type: meta.type || 'discount',
+      dept: meta.dept || 'Room',
+      bill_id: meta.bill_id || null,
+      bill_number: meta.bill_number || c.bill_no || '',
+      room_number: roomNum,
+      room_count: meta.room_count || (roomNum.includes(',') ? roomNum.split(',').length : 1),
+      rooms_list: meta.rooms_list || null,
+      guest_name: meta.guest_name || c.guest_name || 'Guest',
+      members: meta.members || '',
+      expected_checkout: meta.expected_checkout || '',
+      meal_plan: meta.meal_plan || '',
+      discount: Number(meta.discount !== undefined ? meta.discount : (c.subtotal && c.grand_total ? Math.max(0, c.subtotal - c.grand_total) : 0)),
+      discount_pct: Number(meta.discount_pct || 0),
+      current_total: Number(meta.current_total !== undefined ? meta.current_total : (c.subtotal || 0)),
+      final_amount: Number(meta.final_amount !== undefined ? meta.final_amount : (c.grand_total || c.subtotal || 0)),
+      requested_by: meta.requested_by || c.settled_by || 'Staff',
+      requested_at: c.created_at || meta.requested_at || new Date().toISOString(),
+      reason: meta.reason || `Checkout Discount for Room #${roomNum}`,
+      status: st,
+      action_by: c.settled_by || meta.action_by || null,
+      action_at: c.updated_at || meta.action_at || null,
+      metadata: meta.metadata || meta
+    };
+
+    if (st === 'PENDING') {
+      pending.push(item);
+    } else {
+      history.push(item);
+    }
+  }
+
+  pending.sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime());
+  history.sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime());
+
+  return { pending, history };
 }
 
 export async function actApproval(id: any, status: 'approved' | 'rejected') {
