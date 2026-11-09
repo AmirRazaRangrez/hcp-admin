@@ -37,7 +37,15 @@ http.interceptors.request.use(cfg=>{const m=(cfg.method||'get').toLowerCase();if
 const inflight=new Map<string,{t:number;p:Promise<any>}>();
 export const billCache=new Map<string,any>();
 const sget=(url:string,params?:any)=>{const k=url+JSON.stringify(params||{});const h=inflight.get(k);if(h&&Date.now()-h.t<4000)return h.p;const p=http.get(url,{params});inflight.set(k,{t:Date.now(),p});p.catch(()=>inflight.delete(k));return p};
-http.interceptors.request.use(cfg=>{let{baseUrl,token}=useAuth.getState();if(typeof window!=='undefined'&&window.location?.protocol==='https:'&&(!baseUrl||baseUrl.startsWith('http://'))){baseUrl=CLOUD_TUNNEL_URL;}cfg.baseURL=baseUrl.replace(/\/$/,'')+'/api';if(token)cfg.headers.Authorization=`Bearer ${token}`;return cfg});
+http.interceptors.request.use(cfg=>{
+  let{baseUrl,token}=useAuth.getState();
+  if(!baseUrl || baseUrl.includes('10.160.') || baseUrl.includes('192.168.') || (typeof window!=='undefined'&&window.location?.protocol==='https:'&&baseUrl.startsWith('http://')) || (Platform.OS!=='web'&&baseUrl.includes('localhost'))){
+    baseUrl=CLOUD_TUNNEL_URL;
+  }
+  cfg.baseURL=baseUrl.replace(/\/$/,'')+'/api';
+  if(token)cfg.headers.Authorization=`Bearer ${token}`;
+  return cfg;
+});
 http.interceptors.response.use(r=>r,async e=>{const cfg:any=e.config;if(e.response?.status===401&&cfg&&!cfg._retry){cfg._retry=true;inflight.clear();const ok=await useAuth.getState().signIn();if(ok)return http.request(cfg)}return Promise.reject(e)});
 export class NotConnected extends Error{constructor(){super('This feature needs an owner endpoint that the CRM server does not have yet.')}}
 export const errMsg=(e:any)=>e instanceof NotConnected?e.message:e?.response?.data?.error||(e?.isAxiosError&&!e?.response?'Cannot reach the CRM server. Check your connection.':e?.message||'Something went wrong');
@@ -583,13 +591,27 @@ editBill:(dept:string,id:any,body:any)=>owner(()=>http.put(`/owner/bills/${dept.
     return derived.approvals();
   },
   approve: async (id: any) => {
-    try { await http.post('/owner/approvals/' + id + '/approve'); } catch {}
-    await actSupabaseApproval(id, 'approved');
+    const rawId = String(id || '').replace(/^APP-/, '').trim();
+    try {
+      await http.post('/owner/approvals/' + rawId + '/approve');
+    } catch (e) {
+      console.warn('Direct HTTP approval attempt notice:', e);
+    }
+    try {
+      await actSupabaseApproval(id, 'approved');
+    } catch (_) {}
     return { success: true };
   },
   reject: async (id: any, reason?: string) => {
-    try { await http.post('/owner/approvals/' + id + '/reject', { reason }); } catch {}
-    await actSupabaseApproval(id, 'rejected');
+    const rawId = String(id || '').replace(/^APP-/, '').trim();
+    try {
+      await http.post('/owner/approvals/' + rawId + '/reject', { reason });
+    } catch (e) {
+      console.warn('Direct HTTP rejection attempt notice:', e);
+    }
+    try {
+      await actSupabaseApproval(id, 'rejected');
+    } catch (_) {}
     return { success: true };
   },
  activity:(type='all')=>ownerOr(()=>owner(()=>http.get('/owner/activity',{params:{type}}).then(r=>arr(r.data))),()=>derived.activity(type)),

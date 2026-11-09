@@ -1,4 +1,4 @@
-export const CLOUD_TUNNEL_URL: string = 'https://hudson-universal-quite-talented.trycloudflare.com';
+export const CLOUD_TUNNEL_URL: string = 'https://creating-oxide-trailers-champions.trycloudflare.com';
 
 const FIREBASE_TUNNEL_ENDPOINT = 'https://firestore.googleapis.com/v1/projects/hotelcitypark-crm/databases/(default)/documents/room_charges_inbox/cloud_tunnel_url?key=AIzaSyCtZnkdk1_q8rWrISnD8P2Rhi-jcPn1QTI';
 
@@ -14,17 +14,15 @@ const detectServerUrl = (): string => {
       try {
         cached = window.localStorage ? window.localStorage.getItem('hcp_cached_tunnel_url') : null;
       } catch (_) {}
-      return (cached && cached.startsWith('https://')) ? cached : CLOUD_TUNNEL_URL;
+      return (cached && cached.startsWith('https://')) ? cached : (window.location.origin.startsWith('https://') ? window.location.origin : CLOUD_TUNNEL_URL);
     }
 
     if (host === 'localhost' || host === '127.0.0.1') {
       return 'http://localhost:3000';
     }
-    if (host && !host.includes('netlify.app') && !host.includes('vercel.app')) {
-      return `http://${host}:3000`;
-    }
   }
-  return 'http://10.160.83.195:3000';
+  // Mobile App (Android APK / iOS) on mobile internet data (4G/5G) or outside Wi-Fi: ALWAYS use worldwide Cloud Tunnel URL!
+  return CLOUD_TUNNEL_URL;
 };
 
 export const SERVER_URL: string = detectServerUrl();
